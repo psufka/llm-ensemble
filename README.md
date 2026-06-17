@@ -89,8 +89,9 @@ For quick questions ("what's the capital of France"), one model is fine.
 
 - **Avoid Flash-tier models** — `agy` in particular defaults to Gemini Flash; you must pass `--model`
   or you silently get the weak one.
-- **Models self-heal** — Codex and Grok ride their CLIs' rolling defaults; if a pinned Gemini model is
-  ever retired, the skill re-detects the newest non-Flash Pro tier on its own.
+- **Models stay current on their own** — Codex and Grok ride their CLIs' rolling defaults, and the skill
+  runs `agy models` once per session to lock in the newest non-Flash Gemini Pro — so it tracks new
+  releases without re-checking on every call.
 
 ## Credit
 

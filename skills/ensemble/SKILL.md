@@ -31,7 +31,7 @@ When the user says `ensemble [question]` (or asks for a cross-model take):
    # OpenAI Codex — no model pinned; rides the CLI's current default
    codex exec -c model_reasoning_effort="xhigh" "QUESTION"
 
-   # Google Gemini (Antigravity) — current best non-Flash Pro tier
+   # Google Gemini (Antigravity) — use the model detected this session (default: Gemini 3.1 Pro (High))
    agy --model "Gemini 3.1 Pro (High)" -p "QUESTION"
    # fallback if agy is absent:
    gemini --skip-trust -m gemini-3.1-pro-preview -p "QUESTION"
@@ -42,8 +42,8 @@ When the user says `ensemble [question]` (or asks for a cross-model take):
 
    - Use the identical prompt for every model so answers are comparable.
    - If a CLI errors, proceed with the rest — two responding models is enough.
-   - **Never use Flash-tier models.** `agy` defaults to Gemini Flash, so the `--model` flag is mandatory.
-   - **Self-healing models.** Codex and Grok ride their CLIs' rolling defaults, so they advance on their own. Gemini is pinned to the current best Pro tier — **if that model name errors or 404s, run `agy models`, pick the newest non-Flash _Pro_ model (ignore anything labeled Flash / Fast / Lite / mini), and use it.** Don't ask the user; just heal and keep going.
+   - **Pick the Gemini model once per session.** The **first** time you run an ensemble in a session, run `agy models` and select the newest non-Flash **Pro** tier (ignore anything labeled Flash / Fast / Lite / mini); reuse that selection for the rest of the session instead of re-listing every call. If `agy models` fails, fall back to `Gemini 3.1 Pro (High)`. (Codex and Grok need no detection — they ride their CLIs' rolling defaults.)
+   - **Never use a Flash-tier model.** `agy`'s default IS Flash, so the `--model` flag is always required.
 
 3. **Compare.** Lay out where all models agree, where they diverge, and any blind spot only one caught. Note confidence.
 
