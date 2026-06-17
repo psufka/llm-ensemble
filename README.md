@@ -73,12 +73,23 @@ cp -r llm-ensemble/skills/ensemble ~/.claude/skills/ensemble
 The skill checks that the `codex`, `agy`, and `grok` CLIs are installed (it never installs
 them) and skips any that are missing.
 
-## Safe by default
+## Safe by default — and why the flags matter
 
-These CLIs are coding *agents* — normally they can read, write, and run commands. The skill keeps them to
-**answering only**: everything runs in a throwaway scratch dir (`mktemp -d`), Codex in a read-only sandbox,
-Grok with its file/shell tools disabled, and a watchdog kills any tool that hangs. A normal ensemble run
-can't touch your project, and one stuck model can't stall the batch.
+These CLIs are coding *agents* — normally they read, write, and run commands. The skill keeps each to
+**answering only**. The flags below are load-bearing (the skill keeps them terse to save context; here's the why — don't simplify them):
+
+- **Sandboxing** — `codex --sandbox read-only` and `agy --sandbox` run in real sandboxes; `grok --tools ""`
+  is given *no tools at all* (it can only generate text). None can touch your files or run commands, so no
+  working-dir trick is needed — the `mktemp -d` dir is just a throwaway holder for the prompt + output files.
+- **Grok runs stateless** — `--no-memory` (otherwise grok answers from prior-session memory, breaking
+  cross-model independence); `--disable-web-search` + `--max-turns 1` (otherwise it stalls or
+  `tool_output_error`s trying tools). Avoid the `grok agent` subcommand and bare positional `grok "q"` —
+  per grok's own `~/.grok/docs/.../14-headless-mode.md`.
+- **Prompt passed safely** — one shared `prompt.txt`: codex reads it from stdin, grok via `--prompt-file`,
+  agy via `-p`. Quotes / metacharacters / a leading `-` can't break or inject. (agy is the only one passing
+  it as an argument, so a *very* large or sensitive prompt is briefly visible in `ps`.)
+- **`</dev/null`** on agy/grok — without it `agy` hangs forever waiting on stdin in a non-TTY/parallel context.
+- **A 180s watchdog** kills any hung CLI, so one stuck model can't stall the batch.
 
 ## When to use it
 

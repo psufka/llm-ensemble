@@ -34,39 +34,28 @@ When the user says `ensemble [question]` (or asks for a cross-model take):
 
    Reuse these selections for the rest of the session. **Never use a Flash-tier model.**
 
-3. **Fan out in parallel.** Run every available CLI concurrently — all sandboxed — each writing its own output file, the shared prompt passed safely, with a watchdog so one hung tool can't stall the batch. Drop the line for any CLI you didn't detect in step 2.
+3. **Fan out in parallel.** Run every detected CLI concurrently, each writing its own output file, with a watchdog so one hung tool can't stall the batch. Drop the line for any CLI not detected in step 2.
 
    ```bash
-   # --- Ensemble fan-out: sandboxed, parallel, timed ---
-   # All three CLIs run sandboxed, so isolation needs no working-dir trick. A throwaway
-   # temp dir just holds the prompt + per-model output files (the OS auto-cleans it; no cd).
-   d="$(mktemp -d)"
-   GEMINI_MODEL="Gemini 3.1 Pro (High)"      # ← substitute the model you detected in step 2
+   d="$(mktemp -d)"                          # throwaway holder for prompt + outputs
+   GEMINI_MODEL="Gemini 3.1 Pro (High)"      # ← the model you detected in step 2
 
-   # Write the question ONCE (quoted heredoc = literal; use a delimiter the text can't contain)
    cat > "$d/prompt.txt" <<'EOF_ENSEMBLE_9f3a'
    <PUT THE USER'S QUESTION HERE, VERBATIM>
    EOF_ENSEMBLE_9f3a
 
-   pids=()   # launch only the CLIs you detected in step 2
+   pids=()                                    # launch only the CLIs you detected
    codex exec --skip-git-repo-check --sandbox read-only -c model_reasoning_effort="xhigh" - <"$d/prompt.txt" >"$d/codex.out" 2>&1 & pids+=($!)
    agy  --sandbox --model "$GEMINI_MODEL" -p "$(cat "$d/prompt.txt")" </dev/null >"$d/gemini.out" 2>&1 & pids+=($!)
    grok --no-memory --tools "" --disable-web-search --max-turns 1 --prompt-file "$d/prompt.txt" </dev/null >"$d/grok.out" 2>&1 & pids+=($!)
 
-   # Watchdog: kill any straggler after 180s (portable — needs no `timeout` binary)
-   ( sleep 180; kill "${pids[@]}" 2>/dev/null ) & watchdog=$!
+   ( sleep 180; kill "${pids[@]}" 2>/dev/null ) & watchdog=$!   # bound the wait
    wait "${pids[@]}" 2>/dev/null; kill "$watchdog" 2>/dev/null
-
-   # Read the answers
    for f in "$d"/codex.out "$d"/gemini.out "$d"/grok.out; do [ -f "$f" ] && { echo "----- $f -----"; cat "$f"; }; done
    ```
 
-   - **Answers only, no tool use** — `codex --sandbox read-only` and `agy --sandbox` run in real sandboxes; `grok --tools ""` is given **no tools at all** (it can only generate text — stronger than a sandbox, and it avoids grok's `tool_output_error` flakes). None can read/write your files or run commands, so no working-dir isolation is needed — the temp dir is just a throwaway holder for prompt + outputs.
-   - **Grok runs stateless** — `--no-memory` makes it answer fresh instead of from prior-session memory (it otherwise echoes earlier context, breaking cross-model independence); `--disable-web-search` stops it stalling on web calls; `--max-turns 1` caps it to one turn (no agentic loops). This is the most reliable headless config — confirmed by grok's own `14-headless-mode.md` docs (which also warn off the `grok agent` subcommand and bare positional prompts).
-   - **Prompt passed safely** — one shared `prompt.txt`: codex reads it from stdin, grok via `--prompt-file`, agy via `-p`. No quotes / metacharacters / leading `-` can break or inject. (agy is the only one passing it as an argument, so a *very* large or sensitive prompt is briefly visible in `ps`.)
-   - **Nothing blocks on stdin** — `</dev/null` on agy/grok; without it `agy` hangs forever waiting on stdin in a non-TTY / parallel context.
-   - **Need ≥2 external answers.** Proceed once at least two of {codex, agy, grok} return (alongside your own answer); the watchdog bounds the wait. If only one returns, deliver it but label it a *degraded second opinion*, not a full ensemble.
-   - The 180s watchdog kills a hung CLI so it can't stall the batch — raise it for heavy questions (or wrap each command with GNU `timeout`/`gtimeout` if installed).
+   - **Proceed on ≥2 external answers** (plus your own); if only one returns, call it a *degraded second opinion*, not a full ensemble. Never use a Flash model.
+   - The flags are load-bearing (sandboxes, grok's `--no-memory`/`--tools ""`, `</dev/null`) — **don't simplify them**; the rationale is in the repo [README](../../README.md).
 
 4. **Compare.** Lay out where all models agree, where they diverge, and any blind spot only one caught. Note confidence.
 
