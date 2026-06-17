@@ -5,13 +5,15 @@
 Single-model AI is a flashlight. A multi-model *ensemble* is a floodlight: same effort, fewer blind spots.
 
 This is how I run an "LLM council" from the command line. Inspired by Andrej Karpathy's
-[llm-council](https://github.com/karpathy/llm-council), but stripped down to four CLI tools and one instruction.
+[llm-council](https://github.com/karpathy/llm-council), but stripped down to four CLI tools and a drop-in skill.
 
 ## The idea
 
-Every model has blind spots. Ask one and you get one perspective. Ask four and compare — where they
-agree is more likely right; where they diverge is where to dig. **Claude orchestrates:** it answers first,
-then calls the other three as shell commands, compares all four, and synthesizes a single answer.
+Every model has blind spots. Ask one and you get one perspective. Ask four — from four *different labs* —
+and their blind spots don't overlap the way models from a single vendor would. Where they agree, a claim is
+more likely right (agreement is evidence, not proof — models can still err in correlated ways); where they
+diverge is where to dig. **Claude orchestrates:** it answers first, then runs the other three as shell
+commands, compares all four, and synthesizes one answer.
 
 ## The four models
 
@@ -70,6 +72,13 @@ cp -r llm-ensemble/skills/ensemble ~/.claude/skills/ensemble
 
 The skill checks that the `codex`, `agy`, and `grok` CLIs are installed (it never installs
 them) and skips any that are missing.
+
+## Safe by default
+
+These CLIs are coding *agents* — normally they can read, write, and run commands. The skill keeps them to
+**answering only**: everything runs in a throwaway scratch dir (`mktemp -d`), Codex in a read-only sandbox,
+Grok with its file/shell tools disabled, and a watchdog kills any tool that hangs. A normal ensemble run
+can't touch your project, and one stuck model can't stall the batch.
 
 ## When to use it
 
