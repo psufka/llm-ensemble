@@ -34,37 +34,37 @@ When the user says `ensemble [question]` (or asks for a cross-model take):
 
    Reuse these selections for the rest of the session. **Never use a Flash-tier model.**
 
-3. **Fan out in parallel.** Run every available CLI concurrently in an isolated scratch dir — each with its own output file, the shared prompt passed safely, a watchdog so one hung tool can't stall the batch, and the results surfaced at the end. Drop the line for any CLI you didn't detect in step 2.
+3. **Fan out in parallel.** Run every available CLI concurrently — all sandboxed — each writing its own output file, the shared prompt passed safely, with a watchdog so one hung tool can't stall the batch. Drop the line for any CLI you didn't detect in step 2.
 
    ```bash
-   # --- Ensemble fan-out: isolated, injection-safe, parallel, timed ---
-   scratch="$(mktemp -d)"; cd "$scratch"
+   # --- Ensemble fan-out: sandboxed, parallel, timed ---
+   # All three CLIs run sandboxed, so isolation needs no working-dir trick. A throwaway
+   # temp dir just holds the prompt + per-model output files (the OS auto-cleans it; no cd).
+   d="$(mktemp -d)"
    GEMINI_MODEL="Gemini 3.1 Pro (High)"      # ← substitute the model you detected in step 2
 
    # Write the question ONCE (quoted heredoc = literal; use a delimiter the text can't contain)
-   cat > prompt.txt <<'EOF_ENSEMBLE_9f3a'
+   cat > "$d/prompt.txt" <<'EOF_ENSEMBLE_9f3a'
    <PUT THE USER'S QUESTION HERE, VERBATIM>
    EOF_ENSEMBLE_9f3a
-   Q="$(cat prompt.txt)"
 
-   pids=()   # track only the CLIs you actually launch
-   # codex reads the prompt FROM stdin (no argv limit, no '-'-as-flag, no hang), sandboxed read-only
-   codex exec --skip-git-repo-check --sandbox read-only -c model_reasoning_effort="xhigh" - <prompt.txt >codex.out 2>&1 & pids+=($!)
-   agy  --model "$GEMINI_MODEL" -p "$Q" </dev/null >gemini.out 2>&1 & pids+=($!)
-   grok -p "$Q" --always-approve --disallowed-tools "search_replace,run_terminal_cmd" </dev/null >grok.out 2>&1 & pids+=($!)
+   pids=()   # launch only the CLIs you detected in step 2
+   codex exec --skip-git-repo-check --sandbox read-only -c model_reasoning_effort="xhigh" - <"$d/prompt.txt" >"$d/codex.out" 2>&1 & pids+=($!)
+   agy  --sandbox --model "$GEMINI_MODEL" -p "$(cat "$d/prompt.txt")" </dev/null >"$d/gemini.out" 2>&1 & pids+=($!)
+   grok --no-memory --tools "" --disable-web-search --max-turns 1 --prompt-file "$d/prompt.txt" </dev/null >"$d/grok.out" 2>&1 & pids+=($!)
 
    # Watchdog: kill any straggler after 180s (portable — needs no `timeout` binary)
    ( sleep 180; kill "${pids[@]}" 2>/dev/null ) & watchdog=$!
    wait "${pids[@]}" 2>/dev/null; kill "$watchdog" 2>/dev/null
 
-   # Surface results so you can read them (even from a later shell)
-   echo "scratch: $scratch"
-   for f in codex.out gemini.out grok.out; do [ -f "$f" ] && { echo "----- $f -----"; cat "$f"; }; done
+   # Read the answers
+   for f in "$d"/codex.out "$d"/gemini.out "$d"/grok.out; do [ -f "$f" ] && { echo "----- $f -----"; cat "$f"; }; done
    ```
 
-   - **Same prompt for every model** (one shared `prompt.txt`) so answers are comparable — and so a question with quotes, metacharacters, or a leading `-` can't break or inject into the commands.
-   - **Nothing blocks on stdin:** codex reads the prompt *from* stdin (`- <prompt.txt`); `agy`/`grok` get `</dev/null` — without it `agy` hangs forever waiting on stdin in a non-TTY / parallel context.
-   - **Answers only:** `codex` runs `--sandbox read-only` (a real sandbox); `agy -p` is one-shot, non-agentic; `grok` has edit/shell tools disallowed, but `--always-approve` auto-approves anything else — treat it as best-effort, not a hard sandbox (the scratch dir is the backstop).
+   - **Answers only, no tool use** — `codex --sandbox read-only` and `agy --sandbox` run in real sandboxes; `grok --tools ""` is given **no tools at all** (it can only generate text — stronger than a sandbox, and it avoids grok's `tool_output_error` flakes). None can read/write your files or run commands, so no working-dir isolation is needed — the temp dir is just a throwaway holder for prompt + outputs.
+   - **Grok runs stateless** — `--no-memory` makes it answer fresh instead of from prior-session memory (it otherwise echoes earlier context, breaking cross-model independence); `--disable-web-search` stops it stalling on web calls; `--max-turns 1` caps it to one turn (no agentic loops). This is the most reliable headless config — confirmed by grok's own `14-headless-mode.md` docs (which also warn off the `grok agent` subcommand and bare positional prompts).
+   - **Prompt passed safely** — one shared `prompt.txt`: codex reads it from stdin, grok via `--prompt-file`, agy via `-p`. No quotes / metacharacters / leading `-` can break or inject. (agy is the only one passing it as an argument, so a *very* large or sensitive prompt is briefly visible in `ps`.)
+   - **Nothing blocks on stdin** — `</dev/null` on agy/grok; without it `agy` hangs forever waiting on stdin in a non-TTY / parallel context.
    - **Need ≥2 external answers.** Proceed once at least two of {codex, agy, grok} return (alongside your own answer); the watchdog bounds the wait. If only one returns, deliver it but label it a *degraded second opinion*, not a full ensemble.
    - The 180s watchdog kills a hung CLI so it can't stall the batch — raise it for heavy questions (or wrap each command with GNU `timeout`/`gtimeout` if installed).
 
