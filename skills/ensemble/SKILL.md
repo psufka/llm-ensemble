@@ -28,8 +28,8 @@ When the user says `ensemble [question]` (or asks for a cross-model take):
 2. **Fan out in parallel.** Send the **same** prompt to each available CLI concurrently (run the commands in one batch, not sequentially). Run from a scratch dir (e.g. `/tmp`) so the agentic CLIs don't index the working folder:
 
    ```bash
-   # OpenAI Codex — no model pinned; rides the CLI's current default
-   codex exec -c model_reasoning_effort="xhigh" "QUESTION"
+   # OpenAI Codex — --skip-git-repo-check lets it run from a non-repo dir; no model pinned (rides CLI default)
+   codex exec --skip-git-repo-check -c model_reasoning_effort="xhigh" "QUESTION"
 
    # Google Gemini (Antigravity) — use the model detected this session (default: Gemini 3.1 Pro (High))
    agy --model "Gemini 3.1 Pro (High)" -p "QUESTION"
