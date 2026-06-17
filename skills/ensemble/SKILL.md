@@ -38,16 +38,17 @@ When the user says `ensemble [question]` (or asks for a cross-model take):
 
    ```bash
    # OpenAI Codex — --skip-git-repo-check allows non-repo dirs; rides the detected/default model
-   codex exec --skip-git-repo-check -c model_reasoning_effort="xhigh" "QUESTION"
+   codex exec --skip-git-repo-check -c model_reasoning_effort="xhigh" "QUESTION" </dev/null
 
    # Google Gemini (Antigravity) — pass the model detected via `agy models`; NEVER a hardcoded version
-   agy --model "$GEMINI_MODEL" -p "QUESTION"
+   agy --model "$GEMINI_MODEL" -p "QUESTION" </dev/null
 
    # xAI Grok — grok-build rolling latest (no version to pin)
-   grok -p "QUESTION" --always-approve --disallowed-tools "search_replace,run_terminal_cmd"
+   grok -p "QUESTION" --always-approve --disallowed-tools "search_replace,run_terminal_cmd" </dev/null
    ```
 
    - Use the identical prompt for every model so answers are comparable.
+   - **Run each non-interactively** (`</dev/null`) so no CLI blocks waiting on stdin — without it, `agy` hangs indefinitely in a non-TTY / parallel context. If a tool still hangs, kill it and move on.
    - If a CLI errors or is unavailable, proceed with the rest — two responding models is enough.
 
 4. **Compare.** Lay out where all models agree, where they diverge, and any blind spot only one caught. Note confidence.
