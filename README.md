@@ -82,9 +82,10 @@ These CLIs are coding *agents* — normally they read, write, and run commands. 
   is given *no tools at all* (it can only generate text). None can touch your files or run commands, so no
   working-dir trick is needed — the `mktemp -d` dir is just a throwaway holder for the prompt + output files.
 - **Grok runs stateless** — `--no-memory` (otherwise grok answers from prior-session memory, breaking
-  cross-model independence); `--disable-web-search` + `--max-turns 1` (otherwise it stalls or
+  cross-model independence) and `--tools "" --disable-web-search` (otherwise it stalls or
   `tool_output_error`s trying tools). Avoid the `grok agent` subcommand and bare positional `grok "q"` —
-  per grok's own `~/.grok/docs/.../14-headless-mode.md`.
+  per grok's own `~/.grok/docs/.../14-headless-mode.md`. (`--max-turns 1` was tested and **dropped** — with
+  no tools there's no loop to bound, and it truncated/failed complex answers.)
 - **Prompt passed safely** — one shared `prompt.txt`: codex reads it from stdin, grok via `--prompt-file`,
   agy via `-p`. Quotes / metacharacters / a leading `-` can't break or inject. (agy is the only one passing
   it as an argument, so a *very* large or sensitive prompt is briefly visible in `ps`.)
