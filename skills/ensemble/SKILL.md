@@ -38,6 +38,7 @@ When the user says `ensemble [question]` (or asks for a cross-model take):
 
    ```bash
    d="$(mktemp -d)"                          # throwaway holder for prompt + outputs
+   gcwd="$(mktemp -d)"                        # SEPARATE throwaway cwd for grok (NOT the vault)
    GEMINI_MODEL="Gemini 3.1 Pro (High)"      # ← the model you detected in step 2
 
    cat > "$d/prompt.txt" <<'EOF_ENSEMBLE_9f3a'
@@ -47,15 +48,20 @@ When the user says `ensemble [question]` (or asks for a cross-model take):
    pids=()                                    # launch only the CLIs you detected
    codex exec --skip-git-repo-check --sandbox read-only -c model_reasoning_effort="xhigh" - <"$d/prompt.txt" >"$d/codex.out" 2>&1 & pids+=($!)
    agy  --sandbox --model "$GEMINI_MODEL" -p "$(cat "$d/prompt.txt")" </dev/null >"$d/gemini.out" 2>&1 & pids+=($!)
-   grok --no-memory --tools "" --disable-web-search --prompt-file "$d/prompt.txt" </dev/null >"$d/grok.out" 2>&1 & pids+=($!)
+   grok --no-memory --disable-web-search --sandbox read-only --disallowed-tools "write,write_file,search_replace,str_replace,create_file,edit_file" --cwd "$gcwd" --prompt-file "$d/prompt.txt" </dev/null >"$d/grok.out" 2>&1 & pids+=($!)
 
    ( sleep 180; kill "${pids[@]}" 2>/dev/null ) & watchdog=$!   # bound the wait
    wait "${pids[@]}" 2>/dev/null; kill "$watchdog" 2>/dev/null
+   # grok's --sandbox FAILS OPEN on a typo'd/unknown profile: it prints "sandbox could not be applied",
+   # runs UNSANDBOXED, and exits 0. If that happened, distrust the run and discard grok's output.
+   if [ -f "$d/grok.out" ] && grep -qi "could not be applied" "$d/grok.out"; then
+     echo "⚠️  grok --sandbox did NOT apply (profile typo?) — discarding grok output; treat grok as a missing model this run" >&2; : > "$d/grok.out"
+   fi
    for f in "$d"/codex.out "$d"/gemini.out "$d"/grok.out; do [ -f "$f" ] && { echo "----- $f -----"; cat "$f"; }; done
    ```
 
    - **Proceed on ≥2 external answers** (plus your own); if only one returns, call it a *degraded second opinion*, not a full ensemble. Never use a Flash model.
-   - The flags are load-bearing (sandboxes, grok's `--no-memory`/`--tools ""`, `</dev/null`) — **don't simplify them**; the rationale is in the repo [README](../../README.md).
+   - The flags are load-bearing (sandboxes, grok's `--no-memory` + `--sandbox read-only` + throwaway `--cwd`, `</dev/null`) — **don't simplify them**; the rationale is in the repo [README](../../README.md). grok's write protection is the kernel-level `--sandbox read-only` profile (Seatbelt/Landlock) — that does 100% of the enforcement; the throwaway `--cwd` only stops grok *discovering* your files (it can still write inside temp dirs, harmlessly), and `--disallowed-tools` is cosmetic (grok can also write via bash/python, so only the kernel sandbox actually blocks). ⚠️ The profile name **fails open on a typo** (`--sandbox read_only` with an underscore just warns and runs unsandboxed), so the guard after `wait` discards grok's output if it sees `could not be applied`. The old `--tools ""` did **nothing** (an *allow*-list that fails open) and let grok overwrite a real vault file on 2026-06-17.
 
 4. **Compare.** Lay out where all models agree, where they diverge, and any blind spot only one caught. Note confidence.
 

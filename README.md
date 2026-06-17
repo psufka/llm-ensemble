@@ -78,14 +78,28 @@ them) and skips any that are missing.
 These CLIs are coding *agents* — normally they read, write, and run commands. The skill keeps each to
 **answering only**. The flags below are load-bearing (the skill keeps them terse to save context; here's the why — don't simplify them):
 
-- **Sandboxing** — `codex --sandbox read-only` and `agy --sandbox` run in real sandboxes; `grok --tools ""`
-  is given *no tools at all* (it can only generate text). None can touch your files or run commands, so no
-  working-dir trick is needed — the `mktemp -d` dir is just a throwaway holder for the prompt + output files.
+- **Sandboxing** — all three run write-protected: `codex --sandbox read-only`, `agy --sandbox`, and
+  `grok --sandbox read-only` are real OS-level sandboxes (Seatbelt on macOS, Landlock on Linux) that
+  kernel-block any write outside temp dirs. **Grok additionally runs in a throwaway `--cwd "$(mktemp -d)"`**
+  so it can't even *discover* your real files. (`--disallowed-tools` is also passed but is cosmetic — grok can
+  still write via bash/python, so the kernel `--sandbox` is what actually enforces.) The `codex`/`agy`
+  `mktemp -d` dir is just a throwaway holder for the prompt + output files; grok gets its *own* separate
+  throwaway cwd — kept empty because `--sandbox read-only` still permits writes *inside* temp dirs (harmless).
+  > ⚠️ **Do NOT use `grok --tools ""` for sandboxing.** `--tools` is an *allow*-list and the empty value
+  > **fails open** (no restriction), not closed. On 2026-06-17 a `--tools ""` grok run used its built-in file
+  > editor to **overwrite a real user file** — its cwd was the vault, so it found the file and wrote it by
+  > absolute path. The fix that actually blocks writes is the kernel `--sandbox read-only` profile + a
+  > throwaway `--cwd`, empirically verified: with it, grok told to overwrite a file outside the temp cwd gets
+  > `IO Error: Operation not permitted (os error 1)` and the file is untouched, while still answering normally.
+  > ⚠️ **The profile name itself fails open on a typo.** `grok --sandbox read_only` (underscore) or any
+  > unknown profile just prints `sandbox could not be applied` and runs **UNSANDBOXED with exit 0** — only
+  > `read-only` and `readonly` are valid. The skill guards against this: after the run it greps grok's output
+  > for `could not be applied` and discards grok's answer if the sandbox didn't take.
 - **Grok runs stateless** — `--no-memory` (otherwise grok answers from prior-session memory, breaking
-  cross-model independence) and `--tools "" --disable-web-search` (otherwise it stalls or
-  `tool_output_error`s trying tools). Avoid the `grok agent` subcommand and bare positional `grok "q"` —
-  per grok's own `~/.grok/docs/.../14-headless-mode.md`. (`--max-turns 1` was tested and **dropped** — with
-  no tools there's no loop to bound, and it truncated/failed complex answers.)
+  cross-model independence) and `--disable-web-search` (otherwise it stalls or `tool_output_error`s trying
+  the web tools). Avoid the `grok agent` subcommand and bare positional `grok "q"` —
+  per grok's own `~/.grok/docs/.../14-headless-mode.md`. (`--max-turns 1` was tested and **dropped** — it
+  truncated/failed complex answers.)
 - **Prompt passed safely** — one shared `prompt.txt`: codex reads it from stdin, grok via `--prompt-file`,
   agy via `-p`. Quotes / metacharacters / a leading `-` can't break or inject. (agy is the only one passing
   it as an argument, so a *very* large or sensitive prompt is briefly visible in `ps`.)
