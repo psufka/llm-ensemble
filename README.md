@@ -49,39 +49,30 @@ curl -fsSL https://x.ai/cli/install.sh | bash                 # installs `grok`
 
 Each tool prompts for auth on first run (Anthropic / OpenAI / Google / xAI).
 
-### 2. Teach Claude to orchestrate
+### 2. Install the skill in Claude
 
-Add this to your Claude Code memory (`MEMORY.md` or `CLAUDE.md`) so it persists across sessions —
-explain it once, and `ensemble` just works every time:
+This repo ships a ready-made [Claude Code skill](skills/ensemble/SKILL.md) that handles the whole
+orchestration. The easiest way to install it — **copy the following into Claude Code and send it:**
 
 ```
-When I say "ensemble [question]":
-1. Generate your own answer first.
-2. In parallel, send the SAME question to Codex, Gemini, and Grok via their CLIs.
-3. Compare where all four agree vs. diverge — flag blind spots and confidence.
-4. Return ONE synthesized answer, not a vote tally.
-
-Run each from a scratch dir (e.g. /tmp) so the agentic CLIs don't index your files:
-  Codex:  codex exec -m gpt-5.5 -c model_reasoning_effort="xhigh" "QUESTION"
-  Gemini: agy --model "Gemini 3.1 Pro (High)" -p "QUESTION"
-          # fallback: gemini --skip-trust -m gemini-3.1-pro-preview -p "QUESTION"
-  Grok:   grok -p "QUESTION" --always-approve --disallowed-tools "search_replace,run_terminal_cmd"
-
-2 of the 3 other models is enough if one errors. Never use Flash-tier models.
+Install the "ensemble" skill from github.com/psufka/llm-ensemble: create the folder
+~/.claude/skills/ensemble/ and download
+https://raw.githubusercontent.com/psufka/llm-ensemble/main/skills/ensemble/SKILL.md
+into it as SKILL.md. Then check whether the codex, gemini (or agy), and grok CLIs are
+installed and tell me which ones I still need to set up.
 ```
 
-That's it. Say `ensemble <question>` and Claude does the rest.
+Restart Claude Code so it loads the new skill — then just say `ensemble <question>`.
 
-### Shortcut: install the bundled skill
-
-Instead of pasting that instruction, drop the bundled [Claude Code skill](skills/ensemble/SKILL.md) into your skills directory:
+**Prefer to install it manually?**
 
 ```bash
 git clone https://github.com/psufka/llm-ensemble
 cp -r llm-ensemble/skills/ensemble ~/.claude/skills/ensemble
 ```
 
-Then say `ensemble <question>` in Claude Code. The skill checks that the `codex`, `agy`/`gemini`, and `grok` CLIs are installed (it won't install them) and skips any that are missing.
+The skill checks that the `codex`, `agy`/`gemini`, and `grok` CLIs are installed (it never installs
+them) and skips any that are missing.
 
 ## When to use it
 
