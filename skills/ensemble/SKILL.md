@@ -34,34 +34,38 @@ When the user says `ensemble [question]` (or asks for a cross-model take):
 
    Reuse these selections for the rest of the session. **Never use a Flash-tier model.**
 
-3. **Fan out in parallel.** Run every available CLI concurrently in an isolated scratch dir — each with its own output file, the shared prompt passed safely, `</dev/null`, and a watchdog so one hung tool can't stall the batch. Use the models detected in step 2; drop the line for any CLI that isn't installed.
+3. **Fan out in parallel.** Run every available CLI concurrently in an isolated scratch dir — each with its own output file, the shared prompt passed safely, a watchdog so one hung tool can't stall the batch, and the results surfaced at the end. Drop the line for any CLI you didn't detect in step 2.
 
    ```bash
    # --- Ensemble fan-out: isolated, injection-safe, parallel, timed ---
-   scratch="$(mktemp -d)"; cd "$scratch"          # CLIs run here — not in your project
+   scratch="$(mktemp -d)"; cd "$scratch"
+   GEMINI_MODEL="Gemini 3.1 Pro (High)"      # ← substitute the model you detected in step 2
 
-   # Write the question ONCE via a quoted heredoc → no shell injection, no quoting breakage
-   cat > prompt.txt <<'ENSEMBLE_EOF'
+   # Write the question ONCE (quoted heredoc = literal; use a delimiter the text can't contain)
+   cat > prompt.txt <<'EOF_ENSEMBLE_9f3a'
    <PUT THE USER'S QUESTION HERE, VERBATIM>
-   ENSEMBLE_EOF
+   EOF_ENSEMBLE_9f3a
    Q="$(cat prompt.txt)"
 
-   # Launch each in the background → own output file, stdin closed, codex sandboxed read-only
-   codex exec --skip-git-repo-check --sandbox read-only -c model_reasoning_effort="xhigh" "$Q" </dev/null >codex.out  2>&1 & c=$!
-   agy  --model "$GEMINI_MODEL" -p "$Q"                                                       </dev/null >gemini.out 2>&1 & g=$!
-   grok -p "$Q" --always-approve --disallowed-tools "search_replace,run_terminal_cmd"         </dev/null >grok.out   2>&1 & k=$!
+   pids=()   # track only the CLIs you actually launch
+   # codex reads the prompt FROM stdin (no argv limit, no '-'-as-flag, no hang), sandboxed read-only
+   codex exec --skip-git-repo-check --sandbox read-only -c model_reasoning_effort="xhigh" - <prompt.txt >codex.out 2>&1 & pids+=($!)
+   agy  --model "$GEMINI_MODEL" -p "$Q" </dev/null >gemini.out 2>&1 & pids+=($!)
+   grok -p "$Q" --always-approve --disallowed-tools "search_replace,run_terminal_cmd" </dev/null >grok.out 2>&1 & pids+=($!)
 
    # Watchdog: kill any straggler after 180s (portable — needs no `timeout` binary)
-   ( sleep 180; kill $c $g $k 2>/dev/null ) & w=$!
-   wait $c $g $k 2>/dev/null; kill $w 2>/dev/null
+   ( sleep 180; kill "${pids[@]}" 2>/dev/null ) & watchdog=$!
+   wait "${pids[@]}" 2>/dev/null; kill "$watchdog" 2>/dev/null
 
-   # Read codex.out / gemini.out / grok.out to compare
+   # Surface results so you can read them (even from a later shell)
+   echo "scratch: $scratch"
+   for f in codex.out gemini.out grok.out; do [ -f "$f" ] && { echo "----- $f -----"; cat "$f"; }; done
    ```
 
-   - **Same prompt for every model** (one shared `prompt.txt`) so answers are comparable — and so a question containing quotes or shell metacharacters can't break or inject into the command.
-   - **`</dev/null` on each** — without it `agy` hangs forever waiting on stdin in a non-TTY / parallel context.
-   - **Answers only, no actions:** `codex` runs `--sandbox read-only`; `agy -p` and tool-disallowed `grok` are likewise non-mutating — the ensemble can't touch your files.
-   - **Need ≥2 external answers.** Proceed once at least two of {codex, agy, grok} return (alongside your own answer). If only one returns, deliver it but label it a *degraded second opinion*, not a full ensemble.
+   - **Same prompt for every model** (one shared `prompt.txt`) so answers are comparable — and so a question with quotes, metacharacters, or a leading `-` can't break or inject into the commands.
+   - **Nothing blocks on stdin:** codex reads the prompt *from* stdin (`- <prompt.txt`); `agy`/`grok` get `</dev/null` — without it `agy` hangs forever waiting on stdin in a non-TTY / parallel context.
+   - **Answers only:** `codex` runs `--sandbox read-only` (a real sandbox); `agy -p` is one-shot, non-agentic; `grok` has edit/shell tools disallowed, but `--always-approve` auto-approves anything else — treat it as best-effort, not a hard sandbox (the scratch dir is the backstop).
+   - **Need ≥2 external answers.** Proceed once at least two of {codex, agy, grok} return (alongside your own answer); the watchdog bounds the wait. If only one returns, deliver it but label it a *degraded second opinion*, not a full ensemble.
    - The 180s watchdog kills a hung CLI so it can't stall the batch — raise it for heavy questions (or wrap each command with GNU `timeout`/`gtimeout` if installed).
 
 4. **Compare.** Lay out where all models agree, where they diverge, and any blind spot only one caught. Note confidence.
