@@ -18,9 +18,9 @@ then calls the other three as shell commands, compares all four, and synthesizes
 | Role | Tool | Model I run |
 |---|---|---|
 | Orchestrator + answer #1 | **Claude Code** (Anthropic) | your Claude plan/key |
-| Answer #2 | **Codex** (OpenAI) | `gpt-5.5`, xhigh reasoning |
-| Answer #3 | **Gemini** (Google) | Gemini 3.1 Pro |
-| Answer #4 | **Grok** (xAI) | `grok-build` |
+| Answer #2 | **Codex** (OpenAI) | CLI default · xhigh reasoning |
+| Answer #3 | **Gemini** (Google) | Gemini 3.1 Pro (non-Flash) |
+| Answer #4 | **Grok** (xAI) | `grok-build` (rolling latest) |
 
 ## Setup
 
@@ -87,9 +87,10 @@ For quick questions ("what's the capital of France"), one model is fine.
 
 ## Tips & gotchas
 
-- **Model IDs drift** — re-check the best model for each tool occasionally and update the IDs above.
 - **Avoid Flash-tier models** — `agy` in particular defaults to Gemini Flash; you must pass `--model`
   or you silently get the weak one.
+- **Models self-heal** — Codex and Grok ride their CLIs' rolling defaults; if a pinned Gemini model is
+  ever retired, the skill re-detects the newest non-Flash Pro tier on its own.
 
 ## Credit
 

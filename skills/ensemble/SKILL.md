@@ -28,22 +28,22 @@ When the user says `ensemble [question]` (or asks for a cross-model take):
 2. **Fan out in parallel.** Send the **same** prompt to each available CLI concurrently (run the commands in one batch, not sequentially). Run from a scratch dir (e.g. `/tmp`) so the agentic CLIs don't index the working folder:
 
    ```bash
-   # OpenAI Codex
-   codex exec -m gpt-5.5 -c model_reasoning_effort="xhigh" "QUESTION"
+   # OpenAI Codex — no model pinned; rides the CLI's current default
+   codex exec -c model_reasoning_effort="xhigh" "QUESTION"
 
-   # Google Gemini (Antigravity)
+   # Google Gemini (Antigravity) — current best non-Flash Pro tier
    agy --model "Gemini 3.1 Pro (High)" -p "QUESTION"
    # fallback if agy is absent:
    gemini --skip-trust -m gemini-3.1-pro-preview -p "QUESTION"
 
-   # xAI Grok
+   # xAI Grok — grok-build is a rolling "latest" alias (no version to pin)
    grok -p "QUESTION" --always-approve --disallowed-tools "search_replace,run_terminal_cmd"
    ```
 
    - Use the identical prompt for every model so answers are comparable.
    - If a CLI errors, proceed with the rest — two responding models is enough.
    - **Never use Flash-tier models.** `agy` defaults to Gemini Flash, so the `--model` flag is mandatory.
-   - Model IDs drift; if a model 404s, check the tool's current best model and swap the ID.
+   - **Self-healing models.** Codex and Grok ride their CLIs' rolling defaults, so they advance on their own. Gemini is pinned to the current best Pro tier — **if that model name errors or 404s, run `agy models`, pick the newest non-Flash _Pro_ model (ignore anything labeled Flash / Fast / Lite / mini), and use it.** Don't ask the user; just heal and keep going.
 
 3. **Compare.** Lay out where all models agree, where they diverge, and any blind spot only one caught. Note confidence.
 
