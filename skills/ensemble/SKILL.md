@@ -47,7 +47,7 @@ When the user says `ensemble [question]` (or asks for a cross-model take):
 
    pids=()                                    # launch only the CLIs you detected
    codex exec --skip-git-repo-check --sandbox read-only -c model_reasoning_effort="xhigh" - <"$d/prompt.txt" >"$d/codex.out" 2>&1 & pids+=($!)
-   agy  --sandbox --model "$GEMINI_MODEL" -p "$(cat "$d/prompt.txt")" </dev/null >"$d/gemini.out" 2>&1 & pids+=($!)
+   agy  --sandbox --log-file "$d/agy.log" --model "$GEMINI_MODEL" -p "$(cat "$d/prompt.txt")" </dev/null >"$d/gemini.out" 2>&1 & pids+=($!)
    grok --no-memory --disable-web-search --sandbox read-only --disallowed-tools "write,write_file,search_replace,str_replace,create_file,edit_file" --cwd "$gcwd" --prompt-file "$d/prompt.txt" </dev/null >"$d/grok.out" 2>&1 & pids+=($!)
 
    ( sleep 180; kill "${pids[@]}" 2>/dev/null ) & watchdog=$!   # bound the wait
@@ -57,7 +57,23 @@ When the user says `ensemble [question]` (or asks for a cross-model take):
    if [ -f "$d/grok.out" ] && grep -qi "could not be applied" "$d/grok.out"; then
      echo "⚠️  grok --sandbox did NOT apply (profile typo?) — discarding grok output; treat grok as a missing model this run" >&2; : > "$d/grok.out"
    fi
-   for f in "$d"/codex.out "$d"/gemini.out "$d"/grok.out; do [ -f "$f" ] && { echo "----- $f -----"; cat "$f"; }; done
+   # Empty/whitespace stdout = FAILURE, even on a clean exit 0. Any of these CLIs can exit 0 with no
+   # answer — agy in particular goes SILENT on quota (429) or expired auth (same failure class as grok's
+   # silent-empty-on-expired-auth). Drop empties from the ≥2 count, and for agy surface the real reason
+   # from its --log-file so a dead model isn't mistaken for a valid empty answer.
+   answers=()
+   for f in "$d"/codex.out "$d"/gemini.out "$d"/grok.out; do
+     [ -f "$f" ] || continue
+     if grep -q '[^[:space:]]' "$f"; then answers+=("$f"); continue; fi
+     why="empty output (exit 0, no answer)"
+     if [ "$f" = "$d/gemini.out" ] && [ -f "$d/agy.log" ]; then
+       if   grep -qiE "RESOURCE_EXHAUSTED|429|quota|too many requests|rate limit" "$d/agy.log"; then why="agy quota/rate-limit exhausted"
+       elif grep -qiE "PERMISSION_DENIED|UNAUTHENTICATED|not authenticated|please login" "$d/agy.log"; then why="agy auth failed — run \`agy\` interactively to re-login"; fi
+     fi
+     echo "⚠️  $(basename "$f" .out): $why — dropping from the ensemble" >&2
+   done
+   # Proceed only if ${#answers[@]} ≥ 2 (plus your own); 1 = degraded second opinion, not a full ensemble.
+   for f in "${answers[@]}"; do echo "----- $f -----"; cat "$f"; done
    ```
 
    - **Proceed on ≥2 external answers** (plus your own); if only one returns, call it a *degraded second opinion*, not a full ensemble. Never use a Flash model.

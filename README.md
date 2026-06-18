@@ -105,6 +105,11 @@ These CLIs are coding *agents* — normally they read, write, and run commands. 
   it as an argument, so a *very* large or sensitive prompt is briefly visible in `ps`.)
 - **`</dev/null`** on agy/grok — without it `agy` hangs forever waiting on stdin in a non-TTY/parallel context.
 - **A 180s watchdog** kills any hung CLI, so one stuck model can't stall the batch.
+- **Empty stdout = failure, even on a clean exit 0.** Every one of these CLIs can exit `0` with no answer —
+  `agy` in particular goes *silent* on quota (429) or expired auth instead of erroring (same failure class as
+  grok's silent-empty-on-expired-auth). After the run the skill drops any empty/whitespace output from the
+  ≥2-answer count, and reads `agy`'s `--log-file` to report the real cause (quota vs. auth) so a dead model
+  is never mistaken for a valid empty answer.
 
 ## When to use it
 
