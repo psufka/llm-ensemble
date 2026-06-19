@@ -46,7 +46,7 @@ When the user says `ensemble [question]` (or asks for a cross-model take):
    EOF_ENSEMBLE_9f3a
 
    pids=()                                    # launch only the CLIs you detected
-   codex exec --skip-git-repo-check --sandbox read-only -c model_reasoning_effort="xhigh" - <"$d/prompt.txt" >"$d/codex.out" 2>&1 & pids+=($!)
+   codex exec --skip-git-repo-check --sandbox read-only -c tools.web_search=true -c model_reasoning_effort="xhigh" - <"$d/prompt.txt" >"$d/codex.out" 2>&1 & pids+=($!)
    agy  --sandbox --log-file "$d/agy.log" --model "$GEMINI_MODEL" -p "$(cat "$d/prompt.txt")" </dev/null >"$d/gemini.out" 2>&1 & pids+=($!)
    grok --no-memory --sandbox read-only --disallowed-tools "write,write_file,search_replace,str_replace,create_file,edit_file" --cwd "$gcwd" --prompt-file "$d/prompt.txt" </dev/null >"$d/grok.out" 2>&1 & pids+=($!)
 
