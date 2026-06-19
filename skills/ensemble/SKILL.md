@@ -50,7 +50,7 @@ When the user says `ensemble [question]` (or asks for a cross-model take):
    agy  --sandbox --log-file "$d/agy.log" --model "$GEMINI_MODEL" -p "$(cat "$d/prompt.txt")" </dev/null >"$d/gemini.out" 2>&1 & pids+=($!)
    grok --no-memory --sandbox read-only --disallowed-tools "write,write_file,search_replace,str_replace,create_file,edit_file" --cwd "$gcwd" --prompt-file "$d/prompt.txt" </dev/null >"$d/grok.out" 2>&1 & pids+=($!)
 
-   ( sleep 180; kill "${pids[@]}" 2>/dev/null ) & watchdog=$!   # bound the wait
+   ( sleep 600; kill "${pids[@]}" 2>/dev/null ) & watchdog=$!   # bound the wait (10-min cap)
    wait "${pids[@]}" 2>/dev/null; kill "$watchdog" 2>/dev/null
    # grok's --sandbox FAILS OPEN on a typo'd/unknown profile: it prints "sandbox could not be applied",
    # runs UNSANDBOXED, and exits 0. If that happened, distrust the run and discard grok's output.
