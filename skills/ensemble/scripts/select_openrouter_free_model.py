@@ -19,6 +19,7 @@ import urllib.request
 from dataclasses import dataclass
 from datetime import date
 from datetime import datetime
+from datetime import timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Iterable
@@ -124,34 +125,38 @@ def normalize_release_date(value: Any) -> str:
         return ""
     if isinstance(value, (int, float)):
         try:
-            return datetime.utcfromtimestamp(value).date().isoformat()
+            return datetime.fromtimestamp(value, tz=timezone.utc).date().isoformat()
         except (OverflowError, OSError, ValueError):
             return str(value)
     text = str(value)
     if re.fullmatch(r"\d{10}", text):
         try:
-            return datetime.utcfromtimestamp(int(text)).date().isoformat()
+            return datetime.fromtimestamp(int(text), tz=timezone.utc).date().isoformat()
         except (OverflowError, OSError, ValueError):
             return text
     return text
 
 
+def size_pattern(size: str) -> str:
+    return rf"(?<![\d.]){re.escape(size)}(?!\d)"
+
+
 def size_score(model_id: str, name: str) -> float:
     text = f"{model_id} {name}".lower()
     score = 0.0
-    for pattern, points in [
-        (r"1t", 350),
-        (r"550b", 320),
-        (r"480b", 285),
-        (r"405b", 260),
-        (r"120b", 190),
-        (r"80b", 140),
-        (r"70b", 115),
-        (r"32b", 55),
-        (r"30b", 45),
-        (r"20b", 25),
+    for size, points in [
+        ("1t", 350),
+        ("550b", 320),
+        ("480b", 285),
+        ("405b", 260),
+        ("120b", 190),
+        ("80b", 140),
+        ("70b", 115),
+        ("32b", 55),
+        ("30b", 45),
+        ("20b", 25),
     ]:
-        if re.search(pattern, text):
+        if re.search(size_pattern(size), text):
             score += points
             break
     if "ultra" in text:
@@ -202,6 +207,8 @@ def from_openrouter_api(timeout: float = 10.0) -> list[Candidate]:
         if excluded(model_id, name) or not has_text_output_from_api(model):
             continue
         context = as_int(model.get("context_length") or (model.get("top_provider") or {}).get("context_length"))
+        if context <= 0:
+            continue
         output = as_int((model.get("top_provider") or {}).get("max_completion_tokens") or model.get("max_completion_tokens"))
         supported = [str(x).lower() for x in model.get("supported_parameters", []) if isinstance(x, str)]
         reasoning = "reasoning" in supported or "include_reasoning" in supported
@@ -213,7 +220,7 @@ def from_openrouter_api(timeout: float = 10.0) -> list[Candidate]:
 
 
 def from_opencode_cache(path: Path) -> list[Candidate]:
-    payload = json.loads(path.read_text())
+    payload = json.loads(path.read_text(encoding="utf-8"))
     models = (((payload.get("openrouter") or {}).get("models")) or {})
     candidates: list[Candidate] = []
     for model_id, model in models.items():
@@ -227,6 +234,8 @@ def from_opencode_cache(path: Path) -> list[Candidate]:
             continue
         limit = model.get("limit") or {}
         context = as_int(limit.get("context"))
+        if context <= 0:
+            continue
         output = as_int(limit.get("output"))
         reasoning = bool(model.get("reasoning"))
         structured = bool(model.get("structured_output"))

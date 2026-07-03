@@ -2,6 +2,30 @@
 
 Notable changes to `llm-ensemble`.
 
+## 2026-07-03
+
+### Added
+
+- Added `skills/ensemble/scripts/run_ensemble.py` as the structured runner for external ensemble legs.
+- Added machine-readable `status.json` output with per-leg model, exit code, duration, stdout/stderr paths, skip reasons, failure reasons, and OpenRouter attempts.
+- Added per-run Gemini model selection from `agy models`, preferring Pro over Flash and High over lower tiers.
+- Added user-action-required handling for clear `agy` credential failures so Gemini is not silently skipped when Antigravity needs reauthentication.
+- Added OpenRouter real-prompt fallback across alternate free models after retryable upstream/capacity failures.
+
+### Changed
+
+- Replaced the fragile shell fan-out snippet in `SKILL.md` with runner-based instructions.
+- Removed shell `eval` from the OpenRouter execution path used by the ensemble runner.
+- Aligned OpenRouter real-prompt timeout with the runner's 600-second default.
+- Updated README with runner output, Codex `$ensemble` invocation, Gemini selection behavior, and `needs-user-action` mode.
+
+### Fixed
+
+- Fixed heredoc/shell interpolation risk by requiring prompt-file based runner execution.
+- Fixed empty-PID/no-leg hang risk by moving process orchestration into Python.
+- Fixed large `agy -p` prompt handling by recording a clean Gemini failure when the prompt exceeds the configured argument threshold.
+- Hardened OpenRouter helper scripts with explicit UTF-8 reads, non-deprecated timestamp handling, and tighter model-size matching.
+
 ## 2026-07-02
 
 ### Added

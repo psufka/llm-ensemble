@@ -14,9 +14,10 @@ Every model has blind spots. Ask one and you get one perspective. Ask several - 
 and their blind spots don't overlap the way models from a single vendor would. Where they agree, a claim is
 more likely right (agreement is evidence, not proof — models can still err in correlated ways); where they
 diverge is where to dig. **The current AI orchestrates:** it identifies whether it is Claude, Codex, Gemini,
-Grok, OpenRouter, or another LLM, answers first, then runs the allowed external model families as shell/API
-calls, compares the answers, and synthesizes one answer. Claude is orchestrator-only: if the current session is
-Claude, its own answer is the Claude contribution; otherwise the ensemble does not spawn Claude Code.
+Grok, OpenRouter, or another LLM, answers first, then runs the allowed external model families through a
+bundled Python runner, compares the answers, and synthesizes one answer. Claude is orchestrator-only: if the
+current session is Claude, its own answer is the Claude contribution; otherwise the ensemble does not spawn
+Claude Code.
 
 ## The model roster
 
@@ -25,8 +26,8 @@ Claude, its own answer is the Claude contribution; otherwise the ensemble does n
 | Orchestrator + answer #1 | **Current AI session** | Claude, Codex, Gemini, Grok, OpenRouter, or another LLM |
 | Orchestrator-only contribution | **Claude Code** (Anthropic) | used only when Claude is the active session; never spawned as an external leg |
 | External leg | **Codex** (OpenAI) | CLI default · xhigh reasoning; skipped when Codex is the orchestrator |
-| External leg | **Gemini** (Google, via Antigravity) | newest non-Flash Pro (auto-detected); skipped when Gemini is the orchestrator |
-| External leg | **Grok** (xAI) | `grok-build` (rolling latest); skipped when Grok is the orchestrator |
+| External leg | **Gemini** (Google, via Antigravity) | best available Gemini model from `agy models`; skipped when Gemini is the orchestrator |
+| External leg | **Grok** (xAI) | `grok` CLI default; skipped when Grok is the orchestrator |
 | External leg | **OpenRouter** | best currently available free text model, selected dynamically; skipped when OpenRouter is the orchestrator |
 
 ## Setup
@@ -77,7 +78,9 @@ check whether codex, agy, grok, python3, and OPENROUTER_API_KEY are available.
 
 Restart Claude Code so it loads the new skill — then just say `ensemble <question>`.
 
-To install it in Codex, copy the same folder to `~/.codex/skills/ensemble` and restart Codex.
+To install it in Codex, copy the same folder to `~/.codex/skills/ensemble` and restart Codex. In Codex, skills
+are not slash commands; invoke it as `$ensemble`, `Use $ensemble to ...`, or natural language like
+`Use the ensemble skill on this question`.
 
 **Prefer to install it manually?**
 
@@ -90,6 +93,26 @@ cp -R llm-ensemble/skills/ensemble ~/.codex/skills/ensemble
 The skill checks installed/authenticated tools (it never installs them), skips missing tools, and skips the
 same model family as the current orchestrator.
 
+## How the runner works
+
+The skill now calls `skills/ensemble/scripts/run_ensemble.py` instead of asking the orchestrator to copy a long
+shell snippet. The runner writes a temp output directory and prints:
+
+```text
+ENSEMBLE_DIR=/tmp/ensemble-...
+STATUS_JSON=/tmp/ensemble-.../status.json
+MODE=<full|degraded-second-opinion|failed-no-external-answers|needs-user-action>
+```
+
+`status.json` contains the exact roster, selected models, per-leg exit codes, durations, stdout/stderr paths,
+stdout/stderr sizes, skip reasons, failure reasons, and OpenRouter retry attempts. The orchestrator reads only
+legs with `"ok": true`, then synthesizes. The temp directory is kept so the orchestrator can read outputs; delete
+it after synthesis if the prompt or model outputs are sensitive.
+
+If `status.json` has `"requires_user_action": true`, the orchestrator should stop and show the listed
+`user_actions` instead of silently skipping that model. This is mainly for `agy` credential expiry: run `agy`
+interactively, complete Antigravity sign-in, then rerun the ensemble.
+
 ## Safe by default — and why the flags matter
 
 These CLIs are coding *agents* — normally they read, write, and run commands. The skill keeps each to
@@ -100,13 +123,12 @@ These CLIs are coding *agents* — normally they read, write, and run commands. 
   model families. This prevents fake diversity like Codex asking Codex and counting it as a second opinion.
   Claude is not an external leg; it contributes only when the active orchestrator is Claude.
 
-- **Sandboxing** — the agent CLIs run write-protected: `codex --sandbox read-only`, `agy --sandbox`, and
+- **Sandboxing** — the runner invokes agent CLIs write-protected: `codex --sandbox read-only`, `agy --sandbox`, and
   `grok --sandbox read-only` are real OS-level sandboxes (Seatbelt on macOS, Landlock on Linux) that
-  kernel-block any write outside temp dirs. **Grok additionally runs in a throwaway `--cwd "$(mktemp -d)"`**
+  kernel-block any write outside temp dirs. **Grok additionally runs in a throwaway cwd**
   so it can't even *discover* your real files. (`--disallowed-tools` is also passed but is cosmetic — grok can
-  still write via bash/python, so the kernel `--sandbox` is what actually enforces.) The `codex`/`agy`
-  `mktemp -d` dir is just a throwaway holder for the prompt + output files; grok gets its *own* separate
-  throwaway cwd — kept empty because `--sandbox read-only` still permits writes *inside* temp dirs (harmless).
+  still write via bash/python, so the kernel `--sandbox` is what actually enforces.) The runner records sandbox
+  failures in `status.json` and drops Grok if the sandbox did not apply.
 
 - **Web search — all three live (verified 2026-06-18).** Every model grounds answers in current sources, so the
   ensemble fact-checks against today's web rather than stale training data: **Codex** via `-c tools.web_search=true`
@@ -125,8 +147,8 @@ These CLIs are coding *agents* — normally they read, write, and run commands. 
   > `IO Error: Operation not permitted (os error 1)` and the file is untouched, while still answering normally.
   > ⚠️ **The profile name itself fails open on a typo.** `grok --sandbox read_only` (underscore) or any
   > unknown profile just prints `sandbox could not be applied` and runs **UNSANDBOXED with exit 0** — only
-  > `read-only` and `readonly` are valid. The skill guards against this: after the run it greps grok's output
-  > for `could not be applied` and discards grok's answer if the sandbox didn't take.
+  > `read-only` and `readonly` are valid. The runner guards against this and discards Grok's answer if the
+  > sandbox didn't take.
 - **Grok runs stateless** — `--no-memory` (otherwise grok answers from prior-session memory, breaking
   cross-model independence). **Web search is ENABLED** (no `--disable-web-search`) so grok grounds answers in
   current sources — verified on grok 0.2.54 (2026-06-18): returns cited, web-informed answers with the kernel
@@ -136,31 +158,37 @@ These CLIs are coding *agents* — normally they read, write, and run commands. 
   and bare positional `grok "q"` —
   per grok's own `~/.grok/docs/.../14-headless-mode.md`. (`--max-turns 1` was tested and **dropped** — it
   truncated/failed complex answers.)
-- **Prompt passed safely** — one shared `prompt.txt`: codex reads it from stdin, grok via `--prompt-file`,
-  agy via `-p`. Quotes / metacharacters / a leading `-` can't break or inject. (agy is the only one passing
-  it as an argument, so a *very* large or sensitive prompt is briefly visible in `ps`.)
-- **`</dev/null`** on agy/grok — without it `agy` hangs forever waiting on stdin in a non-TTY/parallel context.
-- **A 600s (10-min) watchdog** kills any hung CLI, so one stuck model can't stall the batch. (Raised from 180s on 2026-06-19 — deep-reasoning models like Codex with web search can need the full window.)
+- **Gemini selected fresh each run** - the runner calls `agy models` every ensemble and chooses the best
+  available Gemini quality tier, preferring Pro over Flash regardless of version and preferring High over lower
+  tiers. If `agy` clearly needs recredentialing, the runner returns `needs-user-action` instead of quietly
+  skipping Gemini.
+
+- **Prompt passed safely** — the orchestrator writes one prompt file, and the runner creates a shared
+  `external_prompt.txt` wrapper for all external legs. It never interpolates raw user text into a shell heredoc
+  and never uses shell `eval` to run model calls. Codex reads from stdin, Grok reads via `--prompt-file`, and
+  agy still requires `-p`; if the prompt is too large for an argument, the runner marks Gemini failed cleanly
+  instead of breaking the whole batch. Agy prompts may still be briefly visible in `ps`.
+- **Closed stdin** on agy/grok — without it `agy` hangs forever waiting on stdin in a non-TTY/parallel context.
+- **Per-leg timeouts** default to 600 seconds, so one stuck model can't stall the batch indefinitely.
 - **Empty stdout = failure, even on a clean exit 0.** Every one of these CLIs can exit `0` with no answer —
   `agy` in particular goes *silent* on quota (429) or expired auth instead of erroring (same failure class as
-  grok's silent-empty-on-expired-auth). After the run the skill drops any empty/whitespace output from the
-  ≥2-answer count, and reads `agy`'s `--log-file` to report the real cause (quota vs. auth) so a dead model
-  is never mistaken for a valid empty answer.
+  grok's silent-empty-on-expired-auth). The runner records empty output as failure, classifies common agy log
+  causes, and excludes dead legs from the `>=2` external-answer count.
 
 - **OpenRouter free model selection** - `skills/ensemble/scripts/select_openrouter_free_model.py` selects the
   best currently available free text model. It prefers live OpenRouter `/api/v1/models` metadata, falls back
   to OpenCode's `~/.cache/opencode/models.json`, filters to zero-cost text models, excludes Flash/Fast/Lite/Mini
   and wrong-modality/safety-only models, then prefers reasoning-capable, recent, large, high-context models.
   With `--smoke` and `OPENROUTER_API_KEY`, it probes the top candidates and prefers the first one that passes
-  a tiny exact-output API test, which catches rate-limited or weak-instruction-following free models. `scripts/openrouter_query.py`
-  runs the selected model through the direct OpenRouter API.
+  a tiny exact-output API test, which catches rate-limited or weak-instruction-following free models. During
+  the real prompt, `run_ensemble.py` retries alternate free models on retryable upstream/capacity failures.
 
 ## When to use it
 
 Not everything needs four models. Ensemble for:
 
 - **Decisions with real stakes** — career moves, strategy, money
-- **Fact-checking** — if all four agree, it's more likely to be right; if they diverge, dig deeper
+- **Fact-checking** — if the available models agree, it's more likely to be right; if they diverge, dig deeper
 - **Writing** — parallel drafts surface angles one model would never give you
 - **Checking your assumptions** — each model has different training biases; triangulation exposes yours
 
@@ -168,11 +196,10 @@ For quick questions ("what's the capital of France"), one model is fine.
 
 ## Tips & gotchas
 
-- **Avoid Flash-tier models** — `agy` in particular defaults to Gemini Flash; you must pass `--model`
-  or you silently get the weak one.
+- **Avoid weak Gemini tiers when possible** — `agy` in particular defaults to Gemini Flash; the runner parses
+  `agy models`, prefers Pro over Flash, and uses lower tiers only when no stronger Gemini option is available.
 - **Models stay current — and tell you which they are** — Codex and Grok ride their CLIs' rolling
-  defaults; the skill runs `agy models` once per session to lock in the newest non-Flash Gemini Pro,
-  dynamically selects a free OpenRouter model, and reports the exact roster on the first ensemble of a chat.
+  defaults; the runner selects Gemini and OpenRouter dynamically and writes the exact roster to `status.json`.
 
 ## Credit
 

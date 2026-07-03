@@ -17,9 +17,17 @@ import select_openrouter_free_model
 OPENROUTER_CHAT_URL = "https://openrouter.ai/api/v1/chat/completions"
 
 
+class OpenRouterError(RuntimeError):
+    """OpenRouter request failure with retry guidance for runner fallback."""
+
+    def __init__(self, message: str, retryable: bool = False):
+        super().__init__(message)
+        self.retryable = retryable
+
+
 def read_prompt(args: argparse.Namespace) -> str:
     if args.prompt_file:
-        return Path(args.prompt_file).read_text()
+        return Path(args.prompt_file).read_text(encoding="utf-8")
     if args.prompt:
         return args.prompt
     data = sys.stdin.read()
@@ -28,26 +36,50 @@ def read_prompt(args: argparse.Namespace) -> str:
     raise SystemExit("No prompt provided. Use --prompt-file, --prompt, or stdin.")
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--prompt-file")
-    parser.add_argument("--prompt")
-    parser.add_argument("--model", help="OpenRouter model id. Defaults to best free model selection.")
-    parser.add_argument("--temperature", type=float, default=0.2)
-    parser.add_argument("--max-tokens", type=int, default=4096)
-    parser.add_argument("--timeout", type=float, default=180)
-    parser.add_argument("--print-model", action="store_true")
-    args = parser.parse_args()
+def is_retryable_error(message: str, status_code: int | None = None) -> bool:
+    if status_code in {408, 409, 425, 429, 500, 502, 503, 504}:
+        return True
+    text = message.lower()
+    retry_terms = [
+        "rate limit",
+        "resourceexhausted",
+        "resource exhausted",
+        "capacity",
+        "temporarily unavailable",
+        "timeout",
+        "upstream",
+        "no choices",
+        "worker local total request limit",
+    ]
+    return any(term in text for term in retry_terms)
 
-    api_key = os.environ.get("OPENROUTER_API_KEY")
+
+def extract_content(payload: dict) -> str:
+    choices = payload.get("choices") or []
+    if not choices:
+        raise OpenRouterError(f"OpenRouter returned no choices: {json.dumps(payload)[:2000]}", retryable=True)
+    message = choices[0].get("message") or {}
+    content = message.get("content") or ""
+    if isinstance(content, list):
+        content = "\n".join(str(part.get("text", part)) if isinstance(part, dict) else str(part) for part in content)
+    content = str(content).strip()
+    if not content:
+        raise OpenRouterError("OpenRouter returned empty content.", retryable=True)
+    return content
+
+
+def query_openrouter(
+    prompt: str,
+    model: str,
+    api_key: str | None = None,
+    temperature: float = 0.2,
+    max_tokens: int = 4096,
+    timeout: float = 180,
+) -> str:
+    api_key = api_key or os.environ.get("OPENROUTER_API_KEY")
     if not api_key:
-        raise SystemExit("OPENROUTER_API_KEY is not set.")
+        raise OpenRouterError("OPENROUTER_API_KEY is not set.", retryable=False)
 
-    model = args.model
-    if not model:
-        model = select_openrouter_free_model.select_candidates()[0].model_id
-
-    prompt = read_prompt(args)
     body = {
         "model": model,
         "messages": [
@@ -57,8 +89,8 @@ def main() -> int:
             },
             {"role": "user", "content": prompt},
         ],
-        "temperature": args.temperature,
-        "max_tokens": args.max_tokens,
+        "temperature": temperature,
+        "max_tokens": max_tokens,
     }
     req = urllib.request.Request(
         OPENROUTER_CHAT_URL,
@@ -72,24 +104,42 @@ def main() -> int:
         method="POST",
     )
     try:
-        with urllib.request.urlopen(req, timeout=args.timeout) as response:
+        with urllib.request.urlopen(req, timeout=timeout) as response:
             payload = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")
-        raise SystemExit(f"OpenRouter HTTP {exc.code}: {detail[:2000]}")
+        message = f"OpenRouter HTTP {exc.code}: {detail[:2000]}"
+        raise OpenRouterError(message, retryable=is_retryable_error(message, exc.code)) from exc
     except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
-        raise SystemExit(f"OpenRouter request failed: {exc}")
+        message = f"OpenRouter request failed: {exc}"
+        raise OpenRouterError(message, retryable=is_retryable_error(message)) from exc
 
-    choices = payload.get("choices") or []
-    if not choices:
-        raise SystemExit(f"OpenRouter returned no choices: {json.dumps(payload)[:2000]}")
-    message = choices[0].get("message") or {}
-    content = message.get("content") or ""
-    if isinstance(content, list):
-        content = "\n".join(str(part.get("text", part)) if isinstance(part, dict) else str(part) for part in content)
+    return extract_content(payload)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--prompt-file")
+    parser.add_argument("--prompt")
+    parser.add_argument("--model", help="OpenRouter model id. Defaults to best free model selection.")
+    parser.add_argument("--temperature", type=float, default=0.2)
+    parser.add_argument("--max-tokens", type=int, default=4096)
+    parser.add_argument("--timeout", type=float, default=180)
+    parser.add_argument("--print-model", action="store_true")
+    args = parser.parse_args()
+
+    model = args.model
+    if not model:
+        model = select_openrouter_free_model.select_candidates()[0].model_id
+
+    prompt = read_prompt(args)
+    try:
+        content = query_openrouter(prompt, model, temperature=args.temperature, max_tokens=args.max_tokens, timeout=args.timeout)
+    except OpenRouterError as exc:
+        raise SystemExit(str(exc)) from exc
     if args.print_model:
         print(f"[openrouter model: {model}]", file=sys.stderr)
-    print(str(content).strip())
+    print(content)
     return 0
 
 
