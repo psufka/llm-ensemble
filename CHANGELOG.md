@@ -17,6 +17,7 @@ Notable changes to `llm-ensemble`.
 
 ### Changed
 
+- Claude is now orchestrator-only. Non-Claude orchestrators no longer attempt to spawn `claude --print` as an external ensemble leg.
 - OpenRouter is now called directly through its API instead of through OpenCode by default.
 - README now describes a dynamic model roster instead of a Claude-only four-model council.
 - Skill install instructions now require copying the whole `skills/ensemble` folder because helper scripts are part of the skill.

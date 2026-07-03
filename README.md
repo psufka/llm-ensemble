@@ -14,15 +14,16 @@ Every model has blind spots. Ask one and you get one perspective. Ask several - 
 and their blind spots don't overlap the way models from a single vendor would. Where they agree, a claim is
 more likely right (agreement is evidence, not proof — models can still err in correlated ways); where they
 diverge is where to dig. **The current AI orchestrates:** it identifies whether it is Claude, Codex, Gemini,
-Grok, OpenRouter, or another LLM, answers first, then runs the other model families as shell/API calls,
-compares the answers, and synthesizes one answer.
+Grok, OpenRouter, or another LLM, answers first, then runs the allowed external model families as shell/API
+calls, compares the answers, and synthesizes one answer. Claude is orchestrator-only: if the current session is
+Claude, its own answer is the Claude contribution; otherwise the ensemble does not spawn Claude Code.
 
 ## The model roster
 
 | Role | Tool | Model I run |
 |---|---|---|
 | Orchestrator + answer #1 | **Current AI session** | Claude, Codex, Gemini, Grok, OpenRouter, or another LLM |
-| External leg | **Claude Code** (Anthropic) | used only when the orchestrator is not Claude and the CLI is available |
+| Orchestrator-only contribution | **Claude Code** (Anthropic) | used only when Claude is the active session; never spawned as an external leg |
 | External leg | **Codex** (OpenAI) | CLI default · xhigh reasoning; skipped when Codex is the orchestrator |
 | External leg | **Gemini** (Google, via Antigravity) | newest non-Flash Pro (auto-detected); skipped when Gemini is the orchestrator |
 | External leg | **Grok** (xAI) | `grok-build` (rolling latest); skipped when Grok is the orchestrator |
@@ -71,7 +72,7 @@ The easiest way to install it in Claude Code - **copy the following into Claude 
 ```
 Install the "ensemble" skill from github.com/psufka/llm-ensemble: clone the repo to a temp directory,
 copy its skills/ensemble folder to ~/.claude/skills/ensemble, preserve the scripts/ subfolder, and then
-check whether claude, codex, agy, grok, python3, and OPENROUTER_API_KEY are available.
+check whether codex, agy, grok, python3, and OPENROUTER_API_KEY are available.
 ```
 
 Restart Claude Code so it loads the new skill — then just say `ensemble <question>`.
@@ -95,8 +96,9 @@ These CLIs are coding *agents* — normally they read, write, and run commands. 
 **answering only**. The flags below are load-bearing (the skill keeps them terse to save context; here's the why — don't simplify them):
 
 - **Runtime-aware roster** - the first step is to identify whether the current session is Claude, Codex,
-  Gemini, Grok, OpenRouter, or another LLM. The skill answers first, then fans out only to other model
-  families. This prevents fake diversity like Codex asking Codex and counting it as a second opinion.
+  Gemini, Grok, OpenRouter, or another LLM. The skill answers first, then fans out only to allowed external
+  model families. This prevents fake diversity like Codex asking Codex and counting it as a second opinion.
+  Claude is not an external leg; it contributes only when the active orchestrator is Claude.
 
 - **Sandboxing** — the agent CLIs run write-protected: `codex --sandbox read-only`, `agy --sandbox`, and
   `grok --sandbox read-only` are real OS-level sandboxes (Seatbelt on macOS, Landlock on Linux) that

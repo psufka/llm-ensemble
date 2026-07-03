@@ -1,11 +1,14 @@
 ---
 name: ensemble
-description: Run a question through a runtime-aware multi-model ensemble using Claude, OpenAI Codex, Google Gemini via Antigravity/agy, xAI Grok, and the best currently available free OpenRouter model; compare their answers to your own and synthesize one recommendation. Use when the user says "ensemble", "/ensemble", asks for a cross-model second opinion, or wants to fact-check or stress-test an important decision, claim, or piece of writing. Works from Claude or from another AI/LLM by first identifying the current orchestrator and skipping that same model family.
+description: >-
+  Run a question through a runtime-aware multi-model ensemble using the current orchestrator plus available non-Claude external legs: OpenAI Codex, Google Gemini via Antigravity/agy, xAI Grok, and the best currently available free OpenRouter model; compare their answers and synthesize one recommendation. Claude contributes only when Claude is the current orchestrator, never as a spawned external CLI leg. Use when the user says "ensemble", "/ensemble", asks for a cross-model second opinion, or wants to fact-check or stress-test an important decision, claim, or piece of writing.
 ---
 
 # Ensemble
 
 Run an important question through independent models, then return one synthesized answer. The current AI session is the orchestrator: answer first, fan out to the other available model families, compare, and synthesize.
+
+Claude is orchestrator-only. If the current session is Claude, its first answer is the Claude contribution. If the current session is not Claude, do not call `claude`, `claude --print`, or any other Claude CLI as an external leg.
 
 ## Core Rule
 
@@ -18,21 +21,20 @@ First identify what you are:
 - If you are OpenCode backed by OpenRouter, set orchestrator = `openrouter`.
 - If unclear, set orchestrator = `other` and skip only model families that are obviously the same as you.
 
-Do not infer the orchestrator from installed CLIs. Infer it from the current runtime identity. Never call the same model family as an "independent" ensemble leg.
+Do not infer the orchestrator from installed CLIs. Infer it from the current runtime identity. Never call the same model family as an "independent" ensemble leg. Never call Claude as an external leg.
 
 ## Candidate Legs
 
-Use every available leg except the current orchestrator family:
+Use every available non-Claude external leg except the current orchestrator family:
 
 | Leg | Use when | Command/source |
 |---|---|---|
-| Claude | orchestrator is not Claude and `claude` is installed/authenticated | `claude --print` |
 | Codex | orchestrator is not Codex/OpenAI and `codex` is installed/authenticated | `codex exec` |
 | Gemini | orchestrator is not Gemini/Google and `agy` is installed/authenticated | newest non-Flash Pro from `agy models` |
 | Grok | orchestrator is not Grok/xAI and `grok` is installed/authenticated | `grok-build` CLI default |
 | OpenRouter free | orchestrator is not OpenRouter and `OPENROUTER_API_KEY` is set | `scripts/openrouter_query.py` with the selected free model |
 
-Proceed as a full ensemble only with at least two external answers plus your own. If exactly one external model answers, call it a degraded second opinion. If none answer, stop and report the failures.
+Proceed as a full ensemble only with at least two external answers plus your own orchestrator answer. If exactly one external model answers, call it a degraded second opinion. If none answer, stop and report the failures.
 
 ## OpenRouter Free Model Selection
 
@@ -66,7 +68,7 @@ When the user asks for an ensemble:
 2. **Detect models for this session.** On the first ensemble run in a chat, determine and report the exact roster:
 
    ```text
-   Ensemble models this session - Orchestrator: <you> | External: Claude <model/CLI>, Codex <model/CLI>, Gemini <model>, Grok grok-build, OpenRouter <model>
+   Ensemble models this session - Orchestrator: <you> | External: Codex <model/CLI>, Gemini <model>, Grok grok-build, OpenRouter <model>
    ```
 
    For Gemini, run `agy models` and choose the newest non-Flash Pro tier, preferring High over Low when both exist. Never use Flash, Fast, Lite, or mini models for the main ensemble.
@@ -90,10 +92,6 @@ When the user asks for an ensemble:
    EOF_ENSEMBLE_PROMPT
 
    pids=()
-
-   if [ "$ORCH" != "claude" ] && command -v claude >/dev/null 2>&1; then
-     claude --model opus --print "$(cat "$d/prompt.txt")" </dev/null >"$d/claude.out" 2>"$d/claude.err" & pids+=($!)
-   fi
 
    if [ "$ORCH" != "codex" ] && command -v codex >/dev/null 2>&1; then
      codex exec --skip-git-repo-check --sandbox read-only -c tools.web_search=true -c model_reasoning_effort="xhigh" - <"$d/prompt.txt" >"$d/codex.out" 2>"$d/codex.err" & pids+=($!)
