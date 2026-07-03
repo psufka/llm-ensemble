@@ -1,28 +1,32 @@
 # llm-ensemble
 
-**Run every important question through four AI CLIs at once — then synthesize one better answer.**
+**Run every important question through several AI CLIs at once - then synthesize one better answer.**
 
 Single-model AI is a flashlight. A multi-model *ensemble* is a floodlight: same effort, fewer blind spots.
 
 This is how I run an "LLM council" from the command line. Inspired by Andrej Karpathy's
-[llm-council](https://github.com/karpathy/llm-council), but stripped down to four CLI tools and a drop-in skill.
+[llm-council](https://github.com/karpathy/llm-council), but stripped down to CLI tools, a free OpenRouter
+wildcard, and a drop-in skill.
 
 ## The idea
 
-Every model has blind spots. Ask one and you get one perspective. Ask four — from four *different labs* —
+Every model has blind spots. Ask one and you get one perspective. Ask several - from different labs -
 and their blind spots don't overlap the way models from a single vendor would. Where they agree, a claim is
 more likely right (agreement is evidence, not proof — models can still err in correlated ways); where they
-diverge is where to dig. **Claude orchestrates:** it answers first, then runs the other three as shell
-commands, compares all four, and synthesizes one answer.
+diverge is where to dig. **The current AI orchestrates:** it identifies whether it is Claude, Codex, Gemini,
+Grok, OpenRouter, or another LLM, answers first, then runs the other model families as shell/API calls,
+compares the answers, and synthesizes one answer.
 
-## The four models
+## The model roster
 
 | Role | Tool | Model I run |
 |---|---|---|
-| Orchestrator + answer #1 | **Claude Code** (Anthropic) | your Claude plan/key |
-| Answer #2 | **Codex** (OpenAI) | CLI default · xhigh reasoning |
-| Answer #3 | **Gemini** (Google, via Antigravity) | newest non-Flash Pro (auto-detected) |
-| Answer #4 | **Grok** (xAI) | `grok-build` (rolling latest) |
+| Orchestrator + answer #1 | **Current AI session** | Claude, Codex, Gemini, Grok, OpenRouter, or another LLM |
+| External leg | **Claude Code** (Anthropic) | used only when the orchestrator is not Claude and the CLI is available |
+| External leg | **Codex** (OpenAI) | CLI default · xhigh reasoning; skipped when Codex is the orchestrator |
+| External leg | **Gemini** (Google, via Antigravity) | newest non-Flash Pro (auto-detected); skipped when Gemini is the orchestrator |
+| External leg | **Grok** (xAI) | `grok-build` (rolling latest); skipped when Grok is the orchestrator |
+| External leg | **OpenRouter** | best currently available free text model, selected dynamically; skipped when OpenRouter is the orchestrator |
 
 ## Setup
 
@@ -48,37 +52,53 @@ curl -fsSL https://x.ai/cli/install.sh | bash                 # installs `grok`
 Grok: sign in at grok.com on first run (or set `XAI_API_KEY` for headless use). Each tool prompts for
 auth on first run (Anthropic / OpenAI / Google / xAI).
 
-### 2. Install the skill in Claude
+OpenRouter: set `OPENROUTER_API_KEY` if you want the free-model wildcard:
 
-This repo ships a ready-made [Claude Code skill](skills/ensemble/SKILL.md) that handles the whole
-orchestration. The easiest way to install it — **copy the following into Claude Code and send it:**
+```bash
+export OPENROUTER_API_KEY="..."
+```
+
+The skill uses OpenRouter directly, not OpenCode, for this leg. OpenCode is useful for manual experiments,
+but direct API calls avoid local skill-trigger leakage and long-prompt hangs.
+
+### 2. Install the skill in Claude or Codex
+
+This repo ships a ready-made [skill](skills/ensemble/SKILL.md) that handles the orchestration. Install the
+whole `skills/ensemble` folder because the OpenRouter helpers live in `skills/ensemble/scripts/`.
+
+The easiest way to install it in Claude Code - **copy the following into Claude Code and send it:**
 
 ```
-Install the "ensemble" skill from github.com/psufka/llm-ensemble: create the folder
-~/.claude/skills/ensemble/ and download
-https://raw.githubusercontent.com/psufka/llm-ensemble/main/skills/ensemble/SKILL.md
-into it as SKILL.md. Then check whether the codex, agy, and grok CLIs are
-installed and tell me which ones I still need to set up.
+Install the "ensemble" skill from github.com/psufka/llm-ensemble: clone the repo to a temp directory,
+copy its skills/ensemble folder to ~/.claude/skills/ensemble, preserve the scripts/ subfolder, and then
+check whether claude, codex, agy, grok, python3, and OPENROUTER_API_KEY are available.
 ```
 
 Restart Claude Code so it loads the new skill — then just say `ensemble <question>`.
+
+To install it in Codex, copy the same folder to `~/.codex/skills/ensemble` and restart Codex.
 
 **Prefer to install it manually?**
 
 ```bash
 git clone https://github.com/psufka/llm-ensemble
-cp -r llm-ensemble/skills/ensemble ~/.claude/skills/ensemble
+cp -R llm-ensemble/skills/ensemble ~/.claude/skills/ensemble
+cp -R llm-ensemble/skills/ensemble ~/.codex/skills/ensemble
 ```
 
-The skill checks that the `codex`, `agy`, and `grok` CLIs are installed (it never installs
-them) and skips any that are missing.
+The skill checks installed/authenticated tools (it never installs them), skips missing tools, and skips the
+same model family as the current orchestrator.
 
 ## Safe by default — and why the flags matter
 
 These CLIs are coding *agents* — normally they read, write, and run commands. The skill keeps each to
 **answering only**. The flags below are load-bearing (the skill keeps them terse to save context; here's the why — don't simplify them):
 
-- **Sandboxing** — all three run write-protected: `codex --sandbox read-only`, `agy --sandbox`, and
+- **Runtime-aware roster** - the first step is to identify whether the current session is Claude, Codex,
+  Gemini, Grok, OpenRouter, or another LLM. The skill answers first, then fans out only to other model
+  families. This prevents fake diversity like Codex asking Codex and counting it as a second opinion.
+
+- **Sandboxing** — the agent CLIs run write-protected: `codex --sandbox read-only`, `agy --sandbox`, and
   `grok --sandbox read-only` are real OS-level sandboxes (Seatbelt on macOS, Landlock on Linux) that
   kernel-block any write outside temp dirs. **Grok additionally runs in a throwaway `--cwd "$(mktemp -d)"`**
   so it can't even *discover* your real files. (`--disallowed-tools` is also passed but is cosmetic — grok can
@@ -125,6 +145,14 @@ These CLIs are coding *agents* — normally they read, write, and run commands. 
   ≥2-answer count, and reads `agy`'s `--log-file` to report the real cause (quota vs. auth) so a dead model
   is never mistaken for a valid empty answer.
 
+- **OpenRouter free model selection** - `skills/ensemble/scripts/select_openrouter_free_model.py` selects the
+  best currently available free text model. It prefers live OpenRouter `/api/v1/models` metadata, falls back
+  to OpenCode's `~/.cache/opencode/models.json`, filters to zero-cost text models, excludes Flash/Fast/Lite/Mini
+  and wrong-modality/safety-only models, then prefers reasoning-capable, recent, large, high-context models.
+  With `--smoke` and `OPENROUTER_API_KEY`, it probes the top candidates and prefers the first one that passes
+  a tiny exact-output API test, which catches rate-limited or weak-instruction-following free models. `scripts/openrouter_query.py`
+  runs the selected model through the direct OpenRouter API.
+
 ## When to use it
 
 Not everything needs four models. Ensemble for:
@@ -142,8 +170,7 @@ For quick questions ("what's the capital of France"), one model is fine.
   or you silently get the weak one.
 - **Models stay current — and tell you which they are** — Codex and Grok ride their CLIs' rolling
   defaults; the skill runs `agy models` once per session to lock in the newest non-Flash Gemini Pro,
-  and reports the exact model each tool is using on the first ensemble of a chat. Tracks new releases
-  without re-checking on every call.
+  dynamically selects a free OpenRouter model, and reports the exact roster on the first ensemble of a chat.
 
 ## Credit
 

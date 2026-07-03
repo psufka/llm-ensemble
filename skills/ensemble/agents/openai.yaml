@@ -1,0 +1,7 @@
+interface:
+  display_name: "Ensemble"
+  short_description: "Cross-model answer synthesis"
+  default_prompt: "Use $ensemble to stress-test this question across available model families and synthesize one answer."
+
+policy:
+  allow_implicit_invocation: true
