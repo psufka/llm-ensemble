@@ -1,14 +1,14 @@
 ---
 name: ensemble
 description: >-
-  Run a question through a runtime-aware multi-model ensemble using the current orchestrator plus available non-Claude external legs: OpenAI Codex, Google Gemini via Antigravity/agy, xAI Grok, and the best currently available free OpenRouter model; compare their answers and synthesize one recommendation. Claude contributes only when Claude is the current orchestrator, never as a spawned external CLI leg. Use when the user says "ensemble", "/ensemble", asks for a cross-model second opinion, or wants to fact-check or stress-test an important decision, claim, or piece of writing.
+  Run a question through a runtime-aware multi-model ensemble using the current orchestrator plus available external legs: Claude via Antigravity/agy when Claude is not the orchestrator, OpenAI Codex, Google Gemini via Antigravity/agy, xAI Grok, and the best currently available free OpenRouter model; compare their answers and synthesize one recommendation. Use when the user says "ensemble", "/ensemble", asks for a cross-model second opinion, or wants to fact-check or stress-test an important decision, claim, or piece of writing.
 ---
 
 # Ensemble
 
-Run an important question through independent models, then return one synthesized answer. The current AI session is the orchestrator: answer first, fan out to available non-Claude external model families, compare, and synthesize.
+Run an important question through independent models, then return one synthesized answer. The current AI session is the orchestrator: answer first, fan out to available external model families, compare, and synthesize.
 
-Claude is orchestrator-only. If the current session is Claude, its first answer is the Claude contribution. If the current session is not Claude, do not call `claude`, `claude --print`, or any Claude CLI as an external leg.
+Claude contributes as the current session when Claude is the orchestrator. When the current session is not Claude, the runner may use an Antigravity/agy Claude model as the Claude leg. Never call `claude`, `claude --print`, or any direct Claude CLI as an external leg.
 
 ## Core Rule
 
@@ -21,14 +21,15 @@ First identify what you are:
 - If you are OpenCode backed by OpenRouter, set orchestrator = `openrouter`.
 - If unclear, set orchestrator = `other` and skip only model families that are obviously the same as you.
 
-Do not infer the orchestrator from installed CLIs. Infer it from the current runtime identity. Never call the same model family as an independent ensemble leg. Never call Claude as an external leg.
+Do not infer the orchestrator from installed CLIs. Infer it from the current runtime identity. Never call the same model family as an independent ensemble leg. Never call the direct Claude CLI as an external leg.
 
 ## Candidate Legs
 
-The runner uses every available non-Claude external leg except the current orchestrator family:
+The runner uses every available external leg except the current orchestrator family:
 
 | Leg | Use when | Source |
 |---|---|---|
+| Claude | orchestrator is not Claude/Anthropic and `agy` is installed/authenticated | best available Claude model from `agy models`, preferring Opus over Sonnet |
 | Codex | orchestrator is not Codex/OpenAI and `codex` is installed/authenticated | `codex exec` |
 | Gemini | orchestrator is not Gemini/Google and `agy` is installed/authenticated | best available Gemini model from `agy models` |
 | Grok | orchestrator is not Grok/xAI and `grok` is installed/authenticated | `grok` CLI default |
@@ -83,10 +84,11 @@ Do not paste raw transcripts unless the user asks. Quote short excerpts only whe
 
 - Uses Python subprocess argument lists rather than shell interpolation.
 - Writes `prompt.txt`, `external_prompt.txt`, per-leg `*.out` and `*.err`, and `status.json`.
-- Skips same-family legs and never spawns Claude.
+- Skips same-family legs and never spawns the direct Claude CLI.
+- Selects the best Claude model from `agy models` on every non-Claude-orchestrated run, preferring Opus over Sonnet and Thinking variants over non-Thinking variants.
 - Selects the best Gemini model from `agy models` on every run, preferring Pro over Flash regardless of version and preferring High over lower tiers.
-- Marks clear `agy` credential failures as user-action-required so the orchestrator asks the user to recredential instead of silently skipping Gemini.
-- Detects prompts too large for `agy -p` and records a clean Gemini failure instead of breaking the batch.
+- Marks clear `agy` credential failures as user-action-required so the orchestrator asks the user to recredential instead of silently skipping Claude/Gemini.
+- Detects prompts too large for `agy -p` and records a clean Claude/Gemini failure instead of breaking the batch.
 - Runs Grok with `--no-memory`, `--sandbox read-only`, a throwaway cwd, and a sandbox-failure guard.
 - Selects and smoke-tests free OpenRouter models, then retries alternate free candidates on retryable upstream/capacity failures.
 - Records machine-readable exit codes, durations, stdout/stderr sizes, selected models, attempts, and failure reasons.
@@ -96,6 +98,7 @@ The runner keeps `ENSEMBLE_DIR` so the orchestrator can read the outputs. Remove
 ## CLI Notes
 
 - Codex: the runner uses `codex exec --sandbox read-only` with `tools.web_search=true`.
+- Claude/agy: the runner uses `agy --sandbox --model <selected Claude model> -p <prompt>` when Claude is not the orchestrator. It never calls the direct Claude CLI.
 - Gemini/agy: the runner uses `agy --sandbox --model <selected Pro model> -p <prompt>`. Because `agy` uses a prompt argument, large prompts are skipped for Gemini with a clear status entry.
 - Grok: `--sandbox read-only` is the write-protection. `--disallowed-tools` is not enough. The runner also uses `--no-memory` and a throwaway `--cwd`.
 - OpenRouter: direct API is the default. Do not use OpenCode as the production OpenRouter leg.

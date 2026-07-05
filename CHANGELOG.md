@@ -2,6 +2,18 @@
 
 Notable changes to `llm-ensemble`.
 
+## 2026-07-05
+
+### Added
+
+- Added a Claude external leg through Antigravity/agy for non-Claude orchestrators.
+- Added Claude model selection from `agy models`, preferring Opus over Sonnet and Thinking variants over non-Thinking variants.
+
+### Changed
+
+- Kept the direct Claude CLI banned as an external leg, while allowing Claude models exposed by Antigravity/agy.
+- Updated README and skill instructions to describe the new Claude-via-agy behavior and the shared `agy` credential/quota path.
+
 ## 2026-07-03
 
 ### Added
