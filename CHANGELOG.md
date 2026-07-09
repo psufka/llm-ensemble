@@ -26,6 +26,7 @@ Notable changes to `llm-ensemble`.
 - Tightened `agy` auth-log matching to avoid false reauthentication prompts.
 - Preserved full/degraded synthesis when another leg needs user action but enough valid answers remain.
 - Stopped OpenRouter smoke tests after enough passing fallback candidates are found.
+- Deduplicated Claude/Gemini discovery so `agy models` runs once per ensemble and both legs reuse the same snapshot.
 
 ## 2026-07-03
 

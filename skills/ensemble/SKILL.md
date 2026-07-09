@@ -102,6 +102,7 @@ Do not paste raw transcripts unless the user asks. Quote short excerpts only whe
 - Emits flushed `MODEL_EVENT` lines as each exact model/version resolves and before the user's prompt is sent.
 - Records `orchestrator_model` and per-leg `models_prompted` so the final roster includes retries and failed attempts, not just successful answers.
 - Records attempt-level `attempt_ok` in the top-level prompted-model roster so a failed OpenRouter model is not mislabeled when a fallback succeeds.
+- Calls `agy models` once per ensemble and reuses that single model-list snapshot for both Claude and Gemini selection.
 - Selects the best Claude model from `agy models` on every non-Claude-orchestrated run, preferring Opus over Sonnet and Thinking variants over non-Thinking variants.
 - Resolves the Codex model from `--codex-model`, `ENSEMBLE_CODEX_MODEL`, or the active base Codex config, then pins that exact ID with `-m`.
 - Selects the best Gemini model from `agy models` on every run, preferring Pro over Flash regardless of version and preferring High over lower tiers.

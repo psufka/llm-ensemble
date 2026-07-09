@@ -177,8 +177,9 @@ These CLIs are coding *agents* — normally they read, write, and run commands. 
   and bare positional `grok "q"` —
   per grok's own `~/.grok/docs/.../14-headless-mode.md`. (`--max-turns 1` was tested and **dropped** — it
   truncated/failed complex answers.)
-- **Claude and Gemini selected fresh each run** - the runner calls `agy models` every ensemble and chooses the best
-  available Claude model (Opus over Sonnet, Thinking over non-Thinking) plus the best
+- **Claude and Gemini selected fresh each run** - the runner calls `agy models` once per ensemble, reuses that
+  single snapshot for both legs, and chooses the best available Claude model (Opus over Sonnet, Thinking over
+  non-Thinking) plus the best
   available Gemini quality tier, preferring Pro over Flash regardless of version and preferring High over lower
   tiers. If `agy` clearly needs recredentialing, the runner returns `needs-user-action` instead of quietly
   skipping either leg.

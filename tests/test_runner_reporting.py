@@ -17,6 +17,48 @@ import select_openrouter_free_model
 
 
 class RunnerReportingTests(unittest.TestCase):
+    def test_main_lists_agy_models_once_for_claude_and_gemini(self) -> None:
+        model_lines = ["Claude Opus 4.6 (Thinking)", "Gemini 3.1 Pro (High)"]
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            prompt_path = temp_path / "prompt.txt"
+            prompt_path.write_text("test prompt", encoding="utf-8")
+            args = argparse.Namespace(
+                orchestrator="other",
+                orchestrator_model="test-runtime",
+                prompt_file=prompt_path,
+                output_dir=temp_path / "output",
+                timeout=10,
+                agy_max_prompt_bytes=100_000,
+                codex_model="",
+                grok_model="",
+                keep_workdirs=False,
+            )
+            with mock.patch.object(run_ensemble, "parse_args", return_value=args), mock.patch.object(
+                run_ensemble,
+                "command_exists",
+                side_effect=lambda command: command == "agy",
+            ), mock.patch.object(
+                run_ensemble,
+                "list_agy_models",
+                return_value=(model_lines, "", False),
+            ) as list_models, mock.patch.object(
+                run_ensemble,
+                "run_claude",
+                return_value=run_ensemble.LegResult(leg="claude", family="claude", ok=True),
+            ), mock.patch.object(
+                run_ensemble,
+                "run_gemini",
+                return_value=run_ensemble.LegResult(leg="gemini", family="gemini", ok=True),
+            ), mock.patch.object(
+                run_ensemble,
+                "run_openrouter",
+                return_value=run_ensemble.skip_result("openrouter", "openrouter", "test skip"),
+            ), mock.patch("builtins.print"):
+                self.assertEqual(run_ensemble.main(), 0)
+
+        list_models.assert_called_once()
+
     def test_openrouter_display_avoids_redundant_provider_suffix(self) -> None:
         self.assertEqual(
             run_ensemble.display_model("openrouter", "vendor/model-v2:free"),

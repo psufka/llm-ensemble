@@ -292,9 +292,9 @@ def choose_claude_model(lines: list[str]) -> str:
     return sorted(candidates, reverse=True)[0][3]
 
 
-def select_agy_model(output_dir: Path, leg: str, display_name: str, chooser: Any, timeout: float = 30) -> tuple[str, str, bool]:
-    stdout_path = output_dir / f"{leg}-models.out"
-    stderr_path = output_dir / f"{leg}-models.err"
+def list_agy_models(output_dir: Path, timeout: float = 30) -> tuple[list[str], str, bool]:
+    stdout_path = output_dir / "agy-models.out"
+    stderr_path = output_dir / "agy-models.err"
     try:
         with stdout_path.open("w", encoding="utf-8") as stdout_file, stderr_path.open("w", encoding="utf-8") as stderr_file:
             completed = subprocess.run(
@@ -307,29 +307,35 @@ def select_agy_model(output_dir: Path, leg: str, display_name: str, chooser: Any
             )
     except subprocess.TimeoutExpired:
         write_text(stderr_path, f"agy models timed out after {timeout:g}s\n")
-        return "", "agy models timed out", False
+        return [], "agy models timed out", False
     except Exception as exc:  # noqa: BLE001
         write_text(stderr_path, f"{type(exc).__name__}: {exc}\n")
-        return "", f"agy models failed: {exc}", False
+        return [], f"agy models failed: {exc}", False
     combined = read_text(stdout_path) + "\n" + read_text(stderr_path)
     if is_agy_auth_issue(combined) and completed.returncode != 0:
-        return "", "agy credentials need refresh", True
+        return [], "agy credentials need refresh", True
     if completed.returncode != 0:
-        return "", f"agy models exit code {completed.returncode}", False
-    model = chooser(read_text(stdout_path).splitlines())
+        return [], f"agy models exit code {completed.returncode}", False
+    lines = read_text(stdout_path).splitlines()
+    has_supported_model = any("claude" in line.lower() or "gemini" in line.lower() for line in lines)
+    if is_agy_auth_issue(combined) and not has_supported_model:
+        return [], "agy credentials need refresh", True
+    return lines, "", False
+
+
+def select_agy_model(lines: list[str], display_name: str, chooser: Any) -> tuple[str, str]:
+    model = chooser(lines)
     if not model:
-        if is_agy_auth_issue(combined):
-            return "", "agy credentials need refresh", True
-        return "", f"no {display_name} model found in agy models output", False
-    return model, "", False
+        return "", f"no {display_name} model found in agy models output"
+    return model, ""
 
 
-def select_gemini_model(output_dir: Path, timeout: float = 30) -> tuple[str, str, bool]:
-    return select_agy_model(output_dir, "gemini", "Gemini", choose_gemini_model, timeout)
+def select_gemini_model(lines: list[str]) -> tuple[str, str]:
+    return select_agy_model(lines, "Gemini", choose_gemini_model)
 
 
-def select_claude_model(output_dir: Path, timeout: float = 30) -> tuple[str, str, bool]:
-    return select_agy_model(output_dir, "claude", "Claude", choose_claude_model, timeout)
+def select_claude_model(lines: list[str]) -> tuple[str, str]:
+    return select_agy_model(lines, "Claude", choose_claude_model)
 
 
 def parse_configured_codex_model(config_path: Path) -> str:
@@ -743,25 +749,34 @@ def main() -> int:
 
     legs: list[LegResult] = []
     futures: dict[concurrent.futures.Future[LegResult], str] = {}
+    agy_available = command_exists("agy")
+    agy_model_lines: list[str] = []
+    agy_error = ""
+    agy_requires_action = False
+    if agy_available:
+        agy_model_lines, agy_error, agy_requires_action = list_agy_models(output_dir)
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
         if args.orchestrator == "claude":
             legs.append(skip_result("claude", "claude", "same family as orchestrator"))
-        elif not command_exists("agy"):
+        elif not agy_available:
             legs.append(skip_result("claude", "claude", "agy CLI not found"))
+        elif agy_error:
+            emit_model_event("skipped", "claude", "claude", "", agy_error)
+            legs.append(
+                skip_result(
+                    "claude",
+                    "claude",
+                    agy_error,
+                    requires_user_action=agy_requires_action,
+                    user_action=agy_recredential_action() if agy_requires_action else "",
+                )
+            )
         else:
-            claude_model, claude_error, claude_requires_action = select_claude_model(output_dir)
+            claude_model, claude_error = select_claude_model(agy_model_lines)
             if claude_error:
                 emit_model_event("skipped", "claude", "claude", "", claude_error)
-                legs.append(
-                    skip_result(
-                        "claude",
-                        "claude",
-                        claude_error,
-                        requires_user_action=claude_requires_action,
-                        user_action=agy_recredential_action() if claude_requires_action else "",
-                    )
-                )
+                legs.append(skip_result("claude", "claude", claude_error))
             else:
                 emit_model_event("selected", "claude", "claude", claude_model)
                 futures[executor.submit(run_claude, output_dir, external_prompt, claude_model, args.timeout, args.agy_max_prompt_bytes)] = "claude"
@@ -781,21 +796,24 @@ def main() -> int:
 
         if args.orchestrator == "gemini":
             legs.append(skip_result("gemini", "gemini", "same family as orchestrator"))
-        elif not command_exists("agy"):
+        elif not agy_available:
             legs.append(skip_result("gemini", "gemini", "agy CLI not found"))
+        elif agy_error:
+            emit_model_event("skipped", "gemini", "gemini", "", agy_error)
+            legs.append(
+                skip_result(
+                    "gemini",
+                    "gemini",
+                    agy_error,
+                    requires_user_action=agy_requires_action,
+                    user_action=agy_recredential_action() if agy_requires_action else "",
+                )
+            )
         else:
-            gemini_model, gemini_error, gemini_requires_action = select_gemini_model(output_dir)
+            gemini_model, gemini_error = select_gemini_model(agy_model_lines)
             if gemini_error:
                 emit_model_event("skipped", "gemini", "gemini", "", gemini_error)
-                legs.append(
-                    skip_result(
-                        "gemini",
-                        "gemini",
-                        gemini_error,
-                        requires_user_action=gemini_requires_action,
-                        user_action=agy_recredential_action() if gemini_requires_action else "",
-                    )
-                )
+                legs.append(skip_result("gemini", "gemini", gemini_error))
             else:
                 emit_model_event("selected", "gemini", "gemini", gemini_model)
                 futures[executor.submit(run_gemini, output_dir, external_prompt, gemini_model, args.timeout, args.agy_max_prompt_bytes)] = "gemini"
