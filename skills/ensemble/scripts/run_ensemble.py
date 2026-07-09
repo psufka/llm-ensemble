@@ -75,10 +75,10 @@ def command_exists(command: str) -> bool:
     return shutil.which(command) is not None
 
 
-def display_model(leg: str, model: str) -> str:
-    if leg == "openrouter" and model:
+def display_model(family: str, model: str) -> str:
+    if family == "openrouter" and model:
         model_and_version = model[:-5] if model.endswith(":free") else model
-        return f"{model_and_version} (free) via OpenRouter"
+        return f"{model_and_version} (free)"
     return model
 
 
@@ -88,7 +88,7 @@ def emit_model_event(event: str, leg: str, family: str, model: str, detail: str 
         "leg": leg,
         "family": family,
         "model": model,
-        "display_model": display_model(leg, model),
+        "display_model": display_model(family, model),
     }
     if detail:
         payload["detail"] = detail
@@ -127,7 +127,7 @@ def classify_agy_log(log_path: Path) -> str:
     text = read_text(log_path).lower() if log_path.exists() else ""
     if "429" in text or "quota" in text or "rate limit" in text:
         return "agy quota or rate limit"
-    if "not logged" in text or "oauth" in text or "auth" in text:
+    if is_agy_auth_issue(text):
         return "agy auth issue"
     if "model" in text and ("not found" in text or "failed to resolve" in text):
         return "agy model resolution failed"
@@ -144,8 +144,12 @@ def is_agy_auth_issue(text: str) -> bool:
         "not logged into antigravity",
         "failed to get oauth token",
         "error getting token source",
-        "credential",
+        "credentials need refresh",
+        "credential expired",
+        "invalid credential",
+        "missing credential",
         "not authenticated",
+        "unauthenticated",
     ]
     return any(term in lowered for term in auth_terms)
 
@@ -550,6 +554,8 @@ def openrouter_attempt_candidates(args: argparse.Namespace) -> tuple[list[Any], 
         )
         if passed:
             passing.append(candidate)
+            if len(passing) >= args.openrouter_attempts:
+                break
     return (passing or candidates)[: args.openrouter_attempts], attempts
 
 
@@ -642,15 +648,32 @@ def run_openrouter(output_dir: Path, prompt: str, args: argparse.Namespace) -> L
     return finalize_process_result(result, stdout_path, stderr_path)
 
 
+def prompted_model_rows(leg: LegResult) -> list[dict[str, Any]]:
+    query_attempts = [attempt for attempt in leg.attempts if attempt.get("phase") == "query"]
+    rows: list[dict[str, Any]] = []
+    for index, model in enumerate(leg.models_prompted):
+        attempt_ok = query_attempts[index].get("ok") if index < len(query_attempts) else leg.ok
+        rows.append(
+            {
+                "leg": leg.leg,
+                "family": leg.family,
+                "model": model,
+                "display_model": display_model(leg.family, model),
+                "attempt_ok": bool(attempt_ok),
+            }
+        )
+    return rows
+
+
 def build_manifest(args: argparse.Namespace, output_dir: Path, prompt_file: Path, external_prompt_file: Path, legs: list[LegResult]) -> dict[str, Any]:
     valid_external_count = sum(1 for leg in legs if leg.ok)
     requires_user_action = any(leg.requires_user_action for leg in legs)
-    if requires_user_action:
-        mode = "needs-user-action"
-    elif valid_external_count >= 2:
+    if valid_external_count >= 2:
         mode = "full"
     elif valid_external_count == 1:
         mode = "degraded-second-opinion"
+    elif requires_user_action:
+        mode = "needs-user-action"
     else:
         mode = "failed-no-external-answers"
     return {
@@ -671,19 +694,14 @@ def build_manifest(args: argparse.Namespace, output_dir: Path, prompt_file: Path
                 "leg": "orchestrator",
                 "family": args.orchestrator,
                 "model": args.orchestrator_model,
-                "display_model": args.orchestrator_model,
+                "display_model": display_model(args.orchestrator, args.orchestrator_model),
+                "attempt_ok": True,
             }
         ]
         + [
-            {
-                "leg": leg.leg,
-                "family": leg.family,
-                "model": model,
-                "display_model": display_model(leg.leg, model),
-                "leg_ok": leg.ok,
-            }
+            row
             for leg in legs
-            for model in leg.models_prompted
+            for row in prompted_model_rows(leg)
         ],
     }
 
@@ -816,14 +834,14 @@ def main() -> int:
     print(f"ENSEMBLE_DIR={output_dir}")
     print(f"STATUS_JSON={status_path}")
     print(f"MODE={manifest['mode']}")
-    print(f"orchestrator\tok\t{args.orchestrator_model}")
+    print(f"orchestrator\tok\t{display_model(args.orchestrator, args.orchestrator_model)}")
     if manifest["requires_user_action"]:
         print("USER_ACTION_REQUIRED=1")
         for action in manifest["user_actions"]:
             print(f"USER_ACTION={action}")
     for leg in legs:
         state = "ok" if leg.ok else ("skipped" if leg.skipped else "failed")
-        detail = display_model(leg.leg, leg.model) or leg.failure_reason or leg.skip_reason
+        detail = display_model(leg.family, leg.model) or leg.failure_reason or leg.skip_reason
         print(f"{leg.leg}\t{state}\t{detail}")
     return 0
 

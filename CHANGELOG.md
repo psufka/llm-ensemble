@@ -15,8 +15,17 @@ Notable changes to `llm-ensemble`.
 ### Changed
 
 - Required the final synthesis to end with the same exact model/version roster reported during startup.
-- Standardized OpenRouter user-facing labels as `<exact model/version> (free) via OpenRouter`.
+- Standardized OpenRouter user-facing labels as `<exact model/version> (free)` when the roster already labels the leg as OpenRouter.
+- Suppressed “models are resolving” narration; model rows appear only after the exact model/version is known.
 - Replaced vague Codex/Grok “CLI default” labels with resolved model IDs; unresolved IDs now skip cleanly rather than claiming an unknown model.
+
+### Fixed
+
+- Prevented OpenRouter model-selection exhaustion from terminating the entire runner before `status.json` is written.
+- Added attempt-level success to the prompted-model roster so failed OpenRouter attempts stay labeled when a fallback succeeds.
+- Tightened `agy` auth-log matching to avoid false reauthentication prompts.
+- Preserved full/degraded synthesis when another leg needs user action but enough valid answers remain.
+- Stopped OpenRouter smoke tests after enough passing fallback candidates are found.
 
 ## 2026-07-03
 

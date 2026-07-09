@@ -28,7 +28,7 @@ Antigravity/`agy`. The ensemble never spawns the direct Claude CLI.
 | External leg | **Codex** (OpenAI) | exact configured/overridden model, explicitly pinned with `-m`; xhigh reasoning; skipped when Codex is the orchestrator |
 | External leg | **Gemini** (Google, via Antigravity) | best available Gemini model from `agy models`; skipped when Gemini is the orchestrator |
 | External leg | **Grok** (xAI) | current default resolved from `grok models` and explicitly pinned; skipped when Grok is the orchestrator |
-| External leg | **OpenRouter** | `<exact model/version> (free) via OpenRouter`, selected dynamically; skipped when OpenRouter is the orchestrator |
+| External leg | **OpenRouter** | `<exact model/version> (free)`, selected dynamically; skipped when OpenRouter is the orchestrator |
 
 ## Setup
 
@@ -102,10 +102,12 @@ event as soon as each external model resolves, before that model receives the us
 
 ```text
 MODEL_EVENT={"event":"selected","leg":"claude","model":"Claude Opus 4.6 (Thinking)","display_model":"Claude Opus 4.6 (Thinking)"}
-MODEL_EVENT={"event":"selected","leg":"openrouter","model":"vendor/model-version:free","display_model":"vendor/model-version (free) via OpenRouter"}
+MODEL_EVENT={"event":"selected","leg":"openrouter","model":"vendor/model-version:free","display_model":"vendor/model-version (free)"}
 ```
 
-The orchestrator relays those model/version announcements to the user while the ensemble is still running. If
+The orchestrator relays those model/version announcements to the user while the ensemble is still running, but
+does not narrate model resolution or say that models are resolving. A leg is announced only after its exact
+model/version is known. If
 OpenRouter retries the user's prompt on a fallback, the runner emits a `retry` event and the orchestrator reports
 that too. At completion, the runner writes a temp output directory and prints:
 
@@ -119,13 +121,14 @@ MODE=<full|degraded-second-opinion|failed-no-external-answers|needs-user-action>
 selected models, per-leg exit codes, durations, stdout/stderr paths,
 stdout/stderr sizes, skip reasons, failure reasons, and OpenRouter retry attempts. The orchestrator reads only
 legs with `"ok": true`, then synthesizes. Its final answer ends with a **Models used** roster repeating the exact
-model/version for the orchestrator and every attempted leg. OpenRouter is always shown as
-`<exact model/version> (free) via OpenRouter`. The temp directory is kept so the orchestrator can read outputs;
+model/version for the orchestrator and every attempted leg. Because the roster already labels the OpenRouter leg,
+its model is shown as `<exact model/version> (free)`. The temp directory is kept so the orchestrator can read outputs;
 delete it after synthesis if the prompt or model outputs are sensitive.
 
-If `status.json` has `"requires_user_action": true`, the orchestrator should stop and show the listed
-`user_actions` instead of silently skipping that model. This is mainly for `agy` credential expiry: run `agy`
-interactively, complete Antigravity sign-in, then rerun the ensemble.
+If `status.json` has `"requires_user_action": true`, the orchestrator shows the listed `user_actions` instead of
+silently skipping that model. It stops only when there are no valid external answers; otherwise it still
+synthesizes the available full/degraded ensemble. This is mainly for `agy` credential expiry: run `agy`
+interactively, complete Antigravity sign-in, then rerun the missing leg.
 
 ## Safe by default — and why the flags matter
 
@@ -221,8 +224,8 @@ For quick questions ("what's the capital of France"), one model is fine.
 - **Avoid weak Gemini tiers when possible** — `agy` in particular defaults to Gemini Flash; the runner parses
   `agy models`, prefers Pro over Flash, and uses lower tiers only when no stronger Gemini option is available.
 - **Models stay current — and tell you twice** — the runner emits each exact model/version during startup,
-  records every user-prompt attempt in `status.json`, and the final synthesis repeats the roster. OpenRouter uses
-  `<exact model/version> (free) via OpenRouter`.
+  records every user-prompt attempt plus attempt-level success in `status.json`, and the final synthesis repeats
+  the roster. The already-labeled OpenRouter row uses `<exact model/version> (free)`.
 
 ## Credit
 

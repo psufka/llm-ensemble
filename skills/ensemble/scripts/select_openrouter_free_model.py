@@ -261,7 +261,7 @@ def select_candidates(cache_path: Path | None = None, offline: bool = False) -> 
             return sorted(candidates, key=lambda c: c.score, reverse=True)
     except (OSError, json.JSONDecodeError) as exc:
         errors.append(f"opencode_cache:{exc}")
-    raise SystemExit("No eligible free OpenRouter text models found. " + "; ".join(errors))
+    raise RuntimeError("No eligible free OpenRouter text models found. " + "; ".join(errors))
 
 
 def smoke_model(candidate: Candidate, api_key: str, timeout: float) -> bool:
@@ -340,7 +340,10 @@ def main(argv: Iterable[str] | None = None) -> int:
     parser.add_argument("--smoke-timeout", type=float, default=20, help="seconds per smoke-test request")
     args = parser.parse_args(argv)
 
-    candidates = select_candidates(cache_path=args.cache, offline=args.offline)
+    try:
+        candidates = select_candidates(cache_path=args.cache, offline=args.offline)
+    except RuntimeError as exc:
+        raise SystemExit(str(exc)) from exc
     if args.list:
         for candidate in candidates[:20]:
             print_candidate(candidate, "tsv")
