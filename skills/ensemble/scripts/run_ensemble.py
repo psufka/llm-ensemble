@@ -40,6 +40,7 @@ class LegResult:
     skipped: bool = False
     skip_reason: str = ""
     model: str = ""
+    models_prompted: list[str] = field(default_factory=list)
     command: list[str] = field(default_factory=list)
     stdout_path: str = ""
     stderr_path: str = ""
@@ -72,6 +73,26 @@ def file_size(path: Path) -> int:
 
 def command_exists(command: str) -> bool:
     return shutil.which(command) is not None
+
+
+def display_model(leg: str, model: str) -> str:
+    if leg == "openrouter" and model:
+        model_and_version = model[:-5] if model.endswith(":free") else model
+        return f"{model_and_version} (free) via OpenRouter"
+    return model
+
+
+def emit_model_event(event: str, leg: str, family: str, model: str, detail: str = "") -> None:
+    payload = {
+        "event": event,
+        "leg": leg,
+        "family": family,
+        "model": model,
+        "display_model": display_model(leg, model),
+    }
+    if detail:
+        payload["detail"] = detail
+    print(f"MODEL_EVENT={json.dumps(payload, separators=(',', ':'))}", flush=True)
 
 
 def skip_result(leg: str, family: str, reason: str, requires_user_action: bool = False, user_action: str = "") -> LegResult:
@@ -159,6 +180,7 @@ def run_process_leg(
         leg=leg,
         family=family,
         model=model,
+        models_prompted=[model] if model else [],
         command=command_for_status or args,
         stdout_path=str(stdout_path),
         stderr_path=str(stderr_path),
@@ -306,13 +328,84 @@ def select_claude_model(output_dir: Path, timeout: float = 30) -> tuple[str, str
     return select_agy_model(output_dir, "claude", "Claude", choose_claude_model, timeout)
 
 
-def run_codex(output_dir: Path, prompt: str, timeout: float) -> LegResult:
+def parse_configured_codex_model(config_path: Path) -> str:
+    if not config_path.exists():
+        return ""
+    for line in read_text(config_path).splitlines():
+        if re.match(r"^\s*\[", line):
+            break
+        match = re.match(r'^\s*model\s*=\s*["\']([^"\']+)["\']\s*(?:#.*)?$', line)
+        if match:
+            return match.group(1).strip()
+    return ""
+
+
+def select_codex_model(requested_model: str) -> tuple[str, str]:
+    if requested_model.strip():
+        return requested_model.strip(), ""
+    env_model = os.environ.get("ENSEMBLE_CODEX_MODEL", "").strip()
+    if env_model:
+        return env_model, ""
+    codex_home = Path(os.environ.get("CODEX_HOME", "~/.codex")).expanduser()
+    configured_model = parse_configured_codex_model(codex_home / "config.toml")
+    if configured_model:
+        return configured_model, ""
+    return "", "Codex model could not be resolved; pass --codex-model or set ENSEMBLE_CODEX_MODEL"
+
+
+def choose_grok_model(lines: list[str]) -> str:
+    for raw_line in lines:
+        match = re.match(r"\s*Default model:\s*(\S+)\s*$", raw_line, re.I)
+        if match:
+            return match.group(1)
+    for raw_line in lines:
+        match = re.match(r"\s*\*\s*(\S+)\s*\(default\)\s*$", raw_line, re.I)
+        if match:
+            return match.group(1)
+    return ""
+
+
+def select_grok_model(output_dir: Path, requested_model: str, timeout: float = 30) -> tuple[str, str]:
+    if requested_model.strip():
+        return requested_model.strip(), ""
+    env_model = os.environ.get("ENSEMBLE_GROK_MODEL", "").strip()
+    if env_model:
+        return env_model, ""
+    stdout_path = output_dir / "grok-models.out"
+    stderr_path = output_dir / "grok-models.err"
+    try:
+        with stdout_path.open("w", encoding="utf-8") as stdout_file, stderr_path.open("w", encoding="utf-8") as stderr_file:
+            completed = subprocess.run(
+                ["grok", "models"],
+                stdout=stdout_file,
+                stderr=stderr_file,
+                stdin=subprocess.DEVNULL,
+                text=True,
+                timeout=timeout,
+            )
+    except subprocess.TimeoutExpired:
+        write_text(stderr_path, f"grok models timed out after {timeout:g}s\n")
+        return "", "grok models timed out"
+    except Exception as exc:  # noqa: BLE001
+        write_text(stderr_path, f"{type(exc).__name__}: {exc}\n")
+        return "", f"grok models failed: {exc}"
+    if completed.returncode != 0:
+        return "", f"grok models exit code {completed.returncode}"
+    model = choose_grok_model(read_text(stdout_path).splitlines())
+    if not model:
+        return "", "no default Grok model found in grok models output"
+    return model, ""
+
+
+def run_codex(output_dir: Path, prompt: str, model: str, timeout: float) -> LegResult:
     args = [
         "codex",
         "exec",
         "--skip-git-repo-check",
         "--sandbox",
         "read-only",
+        "--model",
+        model,
         "-c",
         "tools.web_search=true",
         "-c",
@@ -322,7 +415,7 @@ def run_codex(output_dir: Path, prompt: str, timeout: float) -> LegResult:
     return run_process_leg(
         leg="codex",
         family="codex",
-        model="codex-cli default",
+        model=model,
         args=args,
         stdout_path=output_dir / "codex.out",
         stderr_path=output_dir / "codex.err",
@@ -393,11 +486,13 @@ def run_gemini(output_dir: Path, prompt: str, model: str, timeout: float, max_pr
     return run_agy_model(output_dir, prompt, model, timeout, max_prompt_bytes, "gemini", "gemini", "gemini", "agy-gemini.log")
 
 
-def run_grok(output_dir: Path, prompt_file: Path, timeout: float, keep_workdirs: bool) -> LegResult:
+def run_grok(output_dir: Path, prompt_file: Path, model: str, timeout: float, keep_workdirs: bool) -> LegResult:
     grok_cwd = output_dir / "grok-cwd"
     grok_cwd.mkdir(parents=True, exist_ok=True)
     args = [
         "grok",
+        "--model",
+        model,
         "--no-memory",
         "--sandbox",
         "read-only",
@@ -411,7 +506,7 @@ def run_grok(output_dir: Path, prompt_file: Path, timeout: float, keep_workdirs:
     result = run_process_leg(
         leg="grok",
         family="grok",
-        model="grok CLI default",
+        model=model,
         args=args,
         stdout_path=output_dir / "grok.out",
         stderr_path=output_dir / "grok.err",
@@ -489,8 +584,16 @@ def run_openrouter(output_dir: Path, prompt: str, args: argparse.Namespace) -> L
         return finalize_process_result(result, stdout_path, stderr_path)
 
     errors: list[str] = []
-    for candidate in candidates:
+    for attempt_number, candidate in enumerate(candidates, start=1):
         result.model = candidate.model_id
+        result.models_prompted.append(candidate.model_id)
+        emit_model_event(
+            "selected" if attempt_number == 1 else "retry",
+            "openrouter",
+            "openrouter",
+            candidate.model_id,
+            f"user-prompt attempt {attempt_number}",
+        )
         attempt_started = time.monotonic()
         try:
             content = openrouter_query.query_openrouter(
@@ -552,6 +655,7 @@ def build_manifest(args: argparse.Namespace, output_dir: Path, prompt_file: Path
         mode = "failed-no-external-answers"
     return {
         "orchestrator": args.orchestrator,
+        "orchestrator_model": args.orchestrator_model,
         "mode": mode,
         "valid_external_count": valid_external_count,
         "full_ensemble": valid_external_count >= 2,
@@ -562,16 +666,38 @@ def build_manifest(args: argparse.Namespace, output_dir: Path, prompt_file: Path
         "output_dir": str(output_dir),
         "timeout_seconds": args.timeout,
         "legs": [asdict(leg) for leg in legs],
+        "models_prompted": [
+            {
+                "leg": "orchestrator",
+                "family": args.orchestrator,
+                "model": args.orchestrator_model,
+                "display_model": args.orchestrator_model,
+            }
+        ]
+        + [
+            {
+                "leg": leg.leg,
+                "family": leg.family,
+                "model": model,
+                "display_model": display_model(leg.leg, model),
+                "leg_ok": leg.ok,
+            }
+            for leg in legs
+            for model in leg.models_prompted
+        ],
     }
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run external ensemble legs and write status.json.")
     parser.add_argument("--orchestrator", required=True, choices=sorted(ORCHESTRATORS))
+    parser.add_argument("--orchestrator-model", default="version not exposed by runtime")
     parser.add_argument("--prompt-file", required=True, type=Path)
     parser.add_argument("--output-dir", type=Path)
     parser.add_argument("--timeout", type=float, default=600)
     parser.add_argument("--agy-max-prompt-bytes", type=int, default=100_000)
+    parser.add_argument("--codex-model", default="")
+    parser.add_argument("--grok-model", default="")
     parser.add_argument("--openrouter-attempts", type=int, default=3)
     parser.add_argument("--openrouter-smoke-limit", type=int, default=6)
     parser.add_argument("--openrouter-smoke-timeout", type=float, default=20)
@@ -595,6 +721,7 @@ def main() -> int:
     write_text(prompt_file, prompt_text)
     external_prompt = f"{EXTERNAL_SYSTEM_INSTRUCTION}\n\nUSER PROMPT:\n{prompt_text}"
     write_text(external_prompt_file, external_prompt)
+    emit_model_event("selected", "orchestrator", args.orchestrator, args.orchestrator_model, "current runtime")
 
     legs: list[LegResult] = []
     futures: dict[concurrent.futures.Future[LegResult], str] = {}
@@ -607,6 +734,7 @@ def main() -> int:
         else:
             claude_model, claude_error, claude_requires_action = select_claude_model(output_dir)
             if claude_error:
+                emit_model_event("skipped", "claude", "claude", "", claude_error)
                 legs.append(
                     skip_result(
                         "claude",
@@ -617,6 +745,7 @@ def main() -> int:
                     )
                 )
             else:
+                emit_model_event("selected", "claude", "claude", claude_model)
                 futures[executor.submit(run_claude, output_dir, external_prompt, claude_model, args.timeout, args.agy_max_prompt_bytes)] = "claude"
 
         if args.orchestrator == "codex":
@@ -624,7 +753,13 @@ def main() -> int:
         elif not command_exists("codex"):
             legs.append(skip_result("codex", "codex", "codex CLI not found"))
         else:
-            futures[executor.submit(run_codex, output_dir, external_prompt, args.timeout)] = "codex"
+            codex_model, codex_error = select_codex_model(args.codex_model)
+            if codex_error:
+                emit_model_event("skipped", "codex", "codex", "", codex_error)
+                legs.append(skip_result("codex", "codex", codex_error))
+            else:
+                emit_model_event("selected", "codex", "codex", codex_model)
+                futures[executor.submit(run_codex, output_dir, external_prompt, codex_model, args.timeout)] = "codex"
 
         if args.orchestrator == "gemini":
             legs.append(skip_result("gemini", "gemini", "same family as orchestrator"))
@@ -633,6 +768,7 @@ def main() -> int:
         else:
             gemini_model, gemini_error, gemini_requires_action = select_gemini_model(output_dir)
             if gemini_error:
+                emit_model_event("skipped", "gemini", "gemini", "", gemini_error)
                 legs.append(
                     skip_result(
                         "gemini",
@@ -643,6 +779,7 @@ def main() -> int:
                     )
                 )
             else:
+                emit_model_event("selected", "gemini", "gemini", gemini_model)
                 futures[executor.submit(run_gemini, output_dir, external_prompt, gemini_model, args.timeout, args.agy_max_prompt_bytes)] = "gemini"
 
         if args.orchestrator == "grok":
@@ -650,7 +787,13 @@ def main() -> int:
         elif not command_exists("grok"):
             legs.append(skip_result("grok", "grok", "grok CLI not found"))
         else:
-            futures[executor.submit(run_grok, output_dir, external_prompt_file, args.timeout, args.keep_workdirs)] = "grok"
+            grok_model, grok_error = select_grok_model(output_dir, args.grok_model)
+            if grok_error:
+                emit_model_event("skipped", "grok", "grok", "", grok_error)
+                legs.append(skip_result("grok", "grok", grok_error))
+            else:
+                emit_model_event("selected", "grok", "grok", grok_model)
+                futures[executor.submit(run_grok, output_dir, external_prompt_file, grok_model, args.timeout, args.keep_workdirs)] = "grok"
 
         if args.orchestrator == "openrouter":
             legs.append(skip_result("openrouter", "openrouter", "same family as orchestrator"))
@@ -673,13 +816,14 @@ def main() -> int:
     print(f"ENSEMBLE_DIR={output_dir}")
     print(f"STATUS_JSON={status_path}")
     print(f"MODE={manifest['mode']}")
+    print(f"orchestrator\tok\t{args.orchestrator_model}")
     if manifest["requires_user_action"]:
         print("USER_ACTION_REQUIRED=1")
         for action in manifest["user_actions"]:
             print(f"USER_ACTION={action}")
     for leg in legs:
         state = "ok" if leg.ok else ("skipped" if leg.skipped else "failed")
-        detail = leg.model or leg.failure_reason or leg.skip_reason
+        detail = display_model(leg.leg, leg.model) or leg.failure_reason or leg.skip_reason
         print(f"{leg.leg}\t{state}\t{detail}")
     return 0
 

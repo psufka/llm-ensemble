@@ -15,20 +15,20 @@ and their blind spots don't overlap the way models from a single vendor would. W
 more likely right (agreement is evidence, not proof — models can still err in correlated ways); where they
 diverge is where to dig. **The current AI orchestrates:** it identifies whether it is Claude, Codex, Gemini,
 Grok, OpenRouter, or another LLM, answers first, then runs the allowed external model families through a
-bundled Python runner, compares the answers, and synthesizes one answer. Claude contributes either as the
-current orchestrator or, when the current session is not Claude, through an Antigravity/agy Claude model.
-The skill never spawns the direct Claude Code CLI as an external leg.
+bundled Python runner, compares the answers, and synthesizes one answer. If the current session is Claude, its
+own answer is the Claude contribution; when another model orchestrates, Claude can run through
+Antigravity/`agy`. The ensemble never spawns the direct Claude CLI.
 
 ## The model roster
 
 | Role | Tool | Model I run |
 |---|---|---|
-| Orchestrator + answer #1 | **Current AI session** | Claude, Codex, Gemini, Grok, OpenRouter, or another LLM |
-| External leg when not orchestrator | **Claude via Antigravity/agy** | best available Claude model from `agy models`, preferring Opus over Sonnet; skipped when Claude is the orchestrator |
-| External leg | **Codex** (OpenAI) | CLI default · xhigh reasoning; skipped when Codex is the orchestrator |
+| Orchestrator + answer #1 | **Current AI session** | exact runtime model/version when the host exposes it |
+| External leg | **Claude** (Anthropic, via Antigravity) | best available Claude model from `agy models`; skipped when Claude is the orchestrator |
+| External leg | **Codex** (OpenAI) | exact configured/overridden model, explicitly pinned with `-m`; xhigh reasoning; skipped when Codex is the orchestrator |
 | External leg | **Gemini** (Google, via Antigravity) | best available Gemini model from `agy models`; skipped when Gemini is the orchestrator |
-| External leg | **Grok** (xAI) | `grok` CLI default; skipped when Grok is the orchestrator |
-| External leg | **OpenRouter** | best currently available free text model, selected dynamically; skipped when OpenRouter is the orchestrator |
+| External leg | **Grok** (xAI) | current default resolved from `grok models` and explicitly pinned; skipped when Grok is the orchestrator |
+| External leg | **OpenRouter** | `<exact model/version> (free) via OpenRouter`, selected dynamically; skipped when OpenRouter is the orchestrator |
 
 ## Setup
 
@@ -96,8 +96,18 @@ same model family as the current orchestrator.
 
 ## How the runner works
 
-The skill now calls `skills/ensemble/scripts/run_ensemble.py` instead of asking the orchestrator to copy a long
-shell snippet. The runner writes a temp output directory and prints:
+The skill calls `skills/ensemble/scripts/run_ensemble.py` instead of asking the orchestrator to copy a long
+shell snippet. It announces the current orchestrator model immediately. The runner then streams one machine-readable
+event as soon as each external model resolves, before that model receives the user's prompt:
+
+```text
+MODEL_EVENT={"event":"selected","leg":"claude","model":"Claude Opus 4.6 (Thinking)","display_model":"Claude Opus 4.6 (Thinking)"}
+MODEL_EVENT={"event":"selected","leg":"openrouter","model":"vendor/model-version:free","display_model":"vendor/model-version (free) via OpenRouter"}
+```
+
+The orchestrator relays those model/version announcements to the user while the ensemble is still running. If
+OpenRouter retries the user's prompt on a fallback, the runner emits a `retry` event and the orchestrator reports
+that too. At completion, the runner writes a temp output directory and prints:
 
 ```text
 ENSEMBLE_DIR=/tmp/ensemble-...
@@ -105,10 +115,13 @@ STATUS_JSON=/tmp/ensemble-.../status.json
 MODE=<full|degraded-second-opinion|failed-no-external-answers|needs-user-action>
 ```
 
-`status.json` contains the exact roster, selected models, per-leg exit codes, durations, stdout/stderr paths,
+`status.json` contains the exact orchestrator model, every model that actually received the user's prompt,
+selected models, per-leg exit codes, durations, stdout/stderr paths,
 stdout/stderr sizes, skip reasons, failure reasons, and OpenRouter retry attempts. The orchestrator reads only
-legs with `"ok": true`, then synthesizes. The temp directory is kept so the orchestrator can read outputs; delete
-it after synthesis if the prompt or model outputs are sensitive.
+legs with `"ok": true`, then synthesizes. Its final answer ends with a **Models used** roster repeating the exact
+model/version for the orchestrator and every attempted leg. OpenRouter is always shown as
+`<exact model/version> (free) via OpenRouter`. The temp directory is kept so the orchestrator can read outputs;
+delete it after synthesis if the prompt or model outputs are sensitive.
 
 If `status.json` has `"requires_user_action": true`, the orchestrator should stop and show the listed
 `user_actions` instead of silently skipping that model. This is mainly for `agy` credential expiry: run `agy`
@@ -122,8 +135,8 @@ These CLIs are coding *agents* — normally they read, write, and run commands. 
 - **Runtime-aware roster** - the first step is to identify whether the current session is Claude, Codex,
   Gemini, Grok, OpenRouter, or another LLM. The skill answers first, then fans out only to allowed external
   model families. This prevents fake diversity like Codex asking Codex and counting it as a second opinion.
-  Claude is skipped when the active orchestrator is Claude; otherwise the runner may use a Claude model exposed
-  by Antigravity/agy. The direct Claude CLI is never spawned as an external leg.
+  When another family orchestrates, Claude may run as an external leg through `agy`; the direct Claude CLI is
+  never spawned.
 
 - **Sandboxing** — the runner invokes agent CLIs write-protected: `codex --sandbox read-only`, `agy --sandbox`, and
   `grok --sandbox read-only` are real OS-level sandboxes (Seatbelt on macOS, Landlock on Linux) that
@@ -162,15 +175,20 @@ These CLIs are coding *agents* — normally they read, write, and run commands. 
   per grok's own `~/.grok/docs/.../14-headless-mode.md`. (`--max-turns 1` was tested and **dropped** — it
   truncated/failed complex answers.)
 - **Claude and Gemini selected fresh each run** - the runner calls `agy models` every ensemble and chooses the best
-  available Claude model when Claude is not the orchestrator, preferring Opus over Sonnet and Thinking variants over
-  non-Thinking variants. It also chooses the best available Gemini quality tier, preferring Pro over Flash regardless
-  of version and preferring High over lower tiers. If `agy` clearly needs recredentialing, the runner returns
-  `needs-user-action` instead of quietly skipping Claude/Gemini.
+  available Claude model (Opus over Sonnet, Thinking over non-Thinking) plus the best
+  available Gemini quality tier, preferring Pro over Flash regardless of version and preferring High over lower
+  tiers. If `agy` clearly needs recredentialing, the runner returns `needs-user-action` instead of quietly
+  skipping either leg.
+
+- **Codex and Grok versions are resolved, then pinned** — Codex resolves from `--codex-model`,
+  `ENSEMBLE_CODEX_MODEL`, or the active base Codex config and passes the exact ID with `-m`. Grok resolves its
+  default with `grok models` and passes it back with `--model`. If either exact ID cannot be resolved, that leg is
+  skipped instead of being mislabeled as a vague CLI default.
 
 - **Prompt passed safely** — the orchestrator writes one prompt file, and the runner creates a shared
   `external_prompt.txt` wrapper for all external legs. It never interpolates raw user text into a shell heredoc
   and never uses shell `eval` to run model calls. Codex reads from stdin, Grok reads via `--prompt-file`, and
-  agy still requires `-p`; if the prompt is too large for an argument, the runner marks Gemini failed cleanly
+  agy still requires `-p`; if the prompt is too large for an argument, the runner marks Claude/Gemini failed cleanly
   instead of breaking the whole batch. Agy prompts may still be briefly visible in `ps`.
 - **Closed stdin** on agy/grok — without it `agy` hangs forever waiting on stdin in a non-TTY/parallel context.
 - **Per-leg timeouts** default to 600 seconds, so one stuck model can't stall the batch indefinitely.
@@ -202,10 +220,9 @@ For quick questions ("what's the capital of France"), one model is fine.
 
 - **Avoid weak Gemini tiers when possible** — `agy` in particular defaults to Gemini Flash; the runner parses
   `agy models`, prefers Pro over Flash, and uses lower tiers only when no stronger Gemini option is available.
-- **Claude through agy is optional account capacity** — if your Antigravity account lists Claude models, non-Claude
-  orchestrators can use that quota pool. If not, the Claude leg is skipped cleanly.
-- **Models stay current — and tell you which they are** — Codex and Grok ride their CLIs' rolling
-  defaults; the runner selects Claude/Gemini and OpenRouter dynamically and writes the exact roster to `status.json`.
+- **Models stay current — and tell you twice** — the runner emits each exact model/version during startup,
+  records every user-prompt attempt in `status.json`, and the final synthesis repeats the roster. OpenRouter uses
+  `<exact model/version> (free) via OpenRouter`.
 
 ## Credit
 

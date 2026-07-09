@@ -2,17 +2,21 @@
 
 Notable changes to `llm-ensemble`.
 
-## 2026-07-05
+## 2026-07-09
 
 ### Added
 
-- Added a Claude external leg through Antigravity/agy for non-Claude orchestrators.
-- Added Claude model selection from `agy models`, preferring Opus over Sonnet and Thinking variants over non-Thinking variants.
+- Added flushed `MODEL_EVENT` startup reporting so the orchestrator can announce each exact model/version as soon as it resolves, before waiting for the ensemble to finish.
+- Added `orchestrator_model` and per-leg `models_prompted` tracking to `status.json`, including failed fallback attempts that received the user's prompt.
+- Added dynamic Grok default resolution through `grok models` and explicit `--model` pinning.
+- Added Codex model resolution through `--codex-model`, `ENSEMBLE_CODEX_MODEL`, or the base Codex config, followed by explicit `-m` pinning.
+- Added Claude-via-Antigravity as an external leg when Claude is not the orchestrator.
 
 ### Changed
 
-- Kept the direct Claude CLI banned as an external leg, while allowing Claude models exposed by Antigravity/agy.
-- Updated README and skill instructions to describe the new Claude-via-agy behavior and the shared `agy` credential/quota path.
+- Required the final synthesis to end with the same exact model/version roster reported during startup.
+- Standardized OpenRouter user-facing labels as `<exact model/version> (free) via OpenRouter`.
+- Replaced vague Codex/Grok “CLI default” labels with resolved model IDs; unresolved IDs now skip cleanly rather than claiming an unknown model.
 
 ## 2026-07-03
 
