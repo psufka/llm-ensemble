@@ -25,7 +25,7 @@ Antigravity/`agy`. The ensemble never spawns the direct Claude CLI.
 |---|---|---|
 | Orchestrator + answer #1 | **Current AI session** | exact runtime model/version when the host exposes it |
 | External leg | **Claude** (Anthropic, via Antigravity) | best available Claude model from `agy models`; skipped when Claude is the orchestrator |
-| External leg | **Codex** (OpenAI) | exact configured/overridden model, explicitly pinned with `-m`; xhigh reasoning; skipped when Codex is the orchestrator |
+| External leg | **Codex** (OpenAI) | exact configured/overridden model, explicitly pinned with `-m`; reasoning effort from the Codex config (overridable via `--codex-effort`/`ENSEMBLE_CODEX_EFFORT`); skipped when Codex is the orchestrator |
 | External leg | **Gemini** (Google, via Antigravity) | best available Gemini model from `agy models`; skipped when Gemini is the orchestrator |
 | External leg | **Grok** (xAI) | current default resolved from `grok models` and explicitly pinned; skipped when Grok is the orchestrator |
 | External leg | **OpenRouter** | `<exact model/version> (free)`, selected dynamically; skipped when OpenRouter is the orchestrator |
@@ -109,13 +109,20 @@ The orchestrator relays those model/version announcements to the user while the 
 does not narrate model resolution or say that models are resolving. A leg is announced only after its exact
 model/version is known. If
 OpenRouter retries the user's prompt on a fallback, the runner emits a `retry` event and the orchestrator reports
-that too. At completion, the runner writes a temp output directory and prints:
+that too. Each leg also emits a `finished` event as it completes, so the orchestrator can track progress.
+Model resolution runs concurrently per leg, so one slow CLI does not delay the others. At completion, the
+runner writes a temp output directory and prints:
 
 ```text
 ENSEMBLE_DIR=/tmp/ensemble-...
 STATUS_JSON=/tmp/ensemble-.../status.json
-MODE=<full|degraded-second-opinion|failed-no-external-answers|needs-user-action>
+MODE=<full|degraded-second-opinion|failed-no-external-answers|needs-user-action|resolve-only>
 ```
+
+Handy flags: `--resolve-only` resolves and announces every leg's exact model *without* sending the prompt
+(a fast model-freshness check), and `--skip-leg`/`--only-leg` control which legs run. OpenRouter answers cut
+off at the token limit are flagged `"truncated": true` in `status.json` so a partial answer is never mistaken
+for a complete one.
 
 `status.json` contains the exact orchestrator model, every model that actually received the user's prompt,
 selected models, per-leg exit codes, durations, stdout/stderr paths,
@@ -127,8 +134,9 @@ delete it after synthesis if the prompt or model outputs are sensitive.
 
 If `status.json` has `"requires_user_action": true`, the orchestrator shows the listed `user_actions` instead of
 silently skipping that model. It stops only when there are no valid external answers; otherwise it still
-synthesizes the available full/degraded ensemble. This is mainly for `agy` credential expiry: run `agy`
-interactively, complete Antigravity sign-in, then rerun the missing leg.
+synthesizes the available full/degraded ensemble. This covers credential expiry on any leg — `agy`
+(run `agy` interactively and complete Antigravity sign-in), Codex (`codex login`), and Grok (sign in or set
+`XAI_API_KEY`) — then rerun the missing leg.
 
 ## Safe by default — and why the flags matter
 

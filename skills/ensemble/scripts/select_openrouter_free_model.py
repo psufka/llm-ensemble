@@ -178,10 +178,12 @@ def size_score(model_id: str, name: str) -> float:
 
 def score_candidate(model_id: str, name: str, context: int, output: int, reasoning: bool, structured: bool, release_date: str) -> tuple[float, str]:
     score = 0.0
-    score += min(context, 1_000_000) / 1000
+    # Context is capped at 500 points so a long-context weak model cannot
+    # outrank a strong reasoner on window size alone.
+    score += min(context, 1_000_000) / 2000
     score += min(output, 128_000) / 4000
     if reasoning:
-        score += 350
+        score += 400
     if structured:
         score += 80
     score += release_score(release_date)

@@ -2,6 +2,34 @@
 
 Notable changes to `llm-ensemble`.
 
+## 2026-08-04
+
+### Added
+
+- Added `--resolve-only` to resolve and announce every leg's exact model without sending the user prompt (fast model-freshness check; `MODE=resolve-only`).
+- Added `--skip-leg` / `--only-leg` (repeatable) to control which legs run.
+- Added a `finished` `MODEL_EVENT` per leg (with `ok` and duration) so the orchestrator can track progress during long runs.
+- Added Codex reasoning-effort resolution from `--codex-effort`, `ENSEMBLE_CODEX_EFFORT`, or the Codex config's `model_reasoning_effort` (previously hardcoded to xhigh, which silently overrode a higher configured effort).
+- Added credential-failure classification for Codex and Grok legs (parity with agy): clear login failures now set `requires_user_action` instead of a generic exit-code failure.
+- Added OpenRouter truncation detection: `finish_reason=length` marks the leg `"truncated": true` in `status.json` and the tail summary, and `max_tokens` is clamped to the model's completion limit.
+
+### Changed
+
+- Model resolution now runs concurrently inside each leg's worker (previously `agy models` and `grok models` ran serially before any leg started — up to 60s of dead time).
+- OpenRouter smoke tests now run concurrently across candidates instead of sequentially (up to ~2 minutes faster startup); passing candidates are still preferred in rank order.
+- Claude model ranking now places Mythos/Fable above Opus and recognizes those names without a "Claude" prefix; Gemini ranking places Ultra above Pro.
+- Rebalanced OpenRouter free-model scoring: context length is capped at 500 points (was 1000) and reasoning support raised to 400, so a long-context weak model can no longer outrank a strong reasoner on window size alone.
+- Raised the default OpenRouter `max_tokens` from 4096 to 16384 (reasoning models spend part of the budget on reasoning tokens).
+- The OpenRouter leg now receives the raw user prompt (its API call already carries the answer-only system message; previously the instruction was duplicated).
+- Trimmed the skill description frontmatter to reduce per-session context cost.
+
+### Fixed
+
+- Fixed Claude/Gemini selection for agy's new slug-format model listing (`gemini-3.1-pro-high`, `claude-opus-4-6-thinking`): the old parser expected display names ("Gemini 3.1 Pro (High)"), found no tier or version in slugs, and its alphabetical fallback actually selected `gemini-3.1-pro-low` over `-high`. Tier and version now parse from both formats.
+- Pinned agy's `--print-timeout` to the leg timeout; agy's 5-minute default silently abandoned longer runs even though the runner allows 10 minutes.
+- Timeouts now kill the leg's entire process group (`start_new_session` + `killpg`), so a hung CLI can no longer leave orphaned child processes behind.
+- The ensemble output directory is now always created with 0700 permissions, including when `--output-dir` is supplied (it holds the full prompt and model outputs).
+
 ## 2026-07-09
 
 ### Added

@@ -54,18 +54,24 @@ def is_retryable_error(message: str, status_code: int | None = None) -> bool:
     return any(term in text for term in retry_terms)
 
 
-def extract_content(payload: dict) -> str:
+def extract_content(payload: dict) -> tuple[str, str]:
     choices = payload.get("choices") or []
     if not choices:
         raise OpenRouterError(f"OpenRouter returned no choices: {json.dumps(payload)[:2000]}", retryable=True)
     message = choices[0].get("message") or {}
+    finish_reason = str(choices[0].get("finish_reason") or "")
     content = message.get("content") or ""
     if isinstance(content, list):
         content = "\n".join(str(part.get("text", part)) if isinstance(part, dict) else str(part) for part in content)
     content = str(content).strip()
     if not content:
+        if finish_reason == "length":
+            raise OpenRouterError(
+                "OpenRouter returned no visible content; the token budget was consumed before any answer (finish_reason=length).",
+                retryable=True,
+            )
         raise OpenRouterError("OpenRouter returned empty content.", retryable=True)
-    return content
+    return content, finish_reason
 
 
 def query_openrouter(
@@ -73,9 +79,10 @@ def query_openrouter(
     model: str,
     api_key: str | None = None,
     temperature: float = 0.2,
-    max_tokens: int = 4096,
+    max_tokens: int = 16_384,
     timeout: float = 180,
-) -> str:
+) -> tuple[str, str]:
+    """Return (content, finish_reason); finish_reason == "length" means truncated."""
     api_key = api_key or os.environ.get("OPENROUTER_API_KEY")
     if not api_key:
         raise OpenRouterError("OPENROUTER_API_KEY is not set.", retryable=False)
@@ -123,7 +130,7 @@ def main() -> int:
     parser.add_argument("--prompt")
     parser.add_argument("--model", help="OpenRouter model id. Defaults to best free model selection.")
     parser.add_argument("--temperature", type=float, default=0.2)
-    parser.add_argument("--max-tokens", type=int, default=4096)
+    parser.add_argument("--max-tokens", type=int, default=16_384)
     parser.add_argument("--timeout", type=float, default=180)
     parser.add_argument("--print-model", action="store_true")
     args = parser.parse_args()
@@ -134,11 +141,13 @@ def main() -> int:
 
     prompt = read_prompt(args)
     try:
-        content = query_openrouter(prompt, model, temperature=args.temperature, max_tokens=args.max_tokens, timeout=args.timeout)
+        content, finish_reason = query_openrouter(prompt, model, temperature=args.temperature, max_tokens=args.max_tokens, timeout=args.timeout)
     except OpenRouterError as exc:
         raise SystemExit(str(exc)) from exc
     if args.print_model:
         print(f"[openrouter model: {model}]", file=sys.stderr)
+    if finish_reason == "length":
+        print("[warning: answer truncated at max tokens (finish_reason=length)]", file=sys.stderr)
     print(content)
     return 0
 

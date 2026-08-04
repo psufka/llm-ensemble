@@ -31,8 +31,12 @@ class RunnerReportingTests(unittest.TestCase):
                 timeout=10,
                 agy_max_prompt_bytes=100_000,
                 codex_model="",
+                codex_effort="",
                 grok_model="",
                 keep_workdirs=False,
+                resolve_only=False,
+                skip_leg=None,
+                only_leg=None,
             )
             with mock.patch.object(run_ensemble, "parse_args", return_value=args), mock.patch.object(
                 run_ensemble,
@@ -148,7 +152,7 @@ class RunnerReportingTests(unittest.TestCase):
         self.assertEqual(result.exit_code, "selection-error")
         self.assertIn("no free models", result.failure_reason)
 
-    def test_openrouter_smoke_stops_after_enough_passing_models(self) -> None:
+    def test_openrouter_smoke_runs_concurrently_and_keeps_rank_order(self) -> None:
         candidates = [
             SimpleNamespace(model_id=f"vendor/model-{index}:free", name=f"Model {index}")
             for index in range(6)
@@ -166,16 +170,23 @@ class RunnerReportingTests(unittest.TestCase):
         ), mock.patch.object(
             run_ensemble.select_openrouter_free_model,
             "smoke_model",
-            return_value=True,
+            side_effect=lambda candidate, api_key, timeout: candidate.model_id
+            not in {"vendor/model-0:free", "vendor/model-2:free"},
         ) as smoke_model:
             selected, attempts = run_ensemble.openrouter_attempt_candidates(args)
 
+        # All limit candidates are smoked concurrently; passing candidates are
+        # preferred in rank order regardless of which smoke finished first.
         self.assertEqual([candidate.model_id for candidate in selected], [
-            "vendor/model-0:free",
             "vendor/model-1:free",
+            "vendor/model-3:free",
         ])
-        self.assertEqual(len(attempts), 2)
-        self.assertEqual(smoke_model.call_count, 2)
+        self.assertEqual(len(attempts), 6)
+        self.assertEqual(smoke_model.call_count, 6)
+        self.assertEqual(
+            [attempt["passed"] for attempt in attempts],
+            [False, True, False, True, True, True],
+        )
 
 
 if __name__ == "__main__":
