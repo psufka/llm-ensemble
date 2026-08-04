@@ -6,6 +6,11 @@ Notable changes to `llm-ensemble`.
 
 ### Added
 
+- Added blinded comparison as the default workflow: the runner writes valid answers in shuffled order to `answers/answer-N.txt` with identities in a separate `answers/mapping.json` (`BLIND_ANSWERS_DIR`), and the skill compares anonymized answers before unblinding. Unblinded runs happen on user request.
+- Added an ensemble-family filter to OpenRouter free-model selection: candidates from vendor families already in the ensemble (orchestrator + active legs) are excluded so the wildcard adds an independent lab. Disable with `--no-openrouter-family-filter`; the standalone selector gained `--exclude-family`.
+- Added an opt-in debate round to the skill workflow: proposed only when answers materially disagree on a consequential question (auto-run when the user opts in up front), built from the anonymized round-1 answers.
+- Added a single retry for CLI legs on generic failures, reported as a `retry` event; auth, quota/rate-limit, timeout, oversized-prompt, and sandbox failures are not retried.
+
 - Added `--resolve-only` to resolve and announce every leg's exact model without sending the user prompt (fast model-freshness check; `MODE=resolve-only`).
 - Added `--skip-leg` / `--only-leg` (repeatable) to control which legs run.
 - Added a `finished` `MODEL_EVENT` per leg (with `ok` and duration) so the orchestrator can track progress during long runs.

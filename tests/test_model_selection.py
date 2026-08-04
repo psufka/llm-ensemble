@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 import tempfile
 import unittest
@@ -197,6 +198,149 @@ class OpenRouterTruncationTests(unittest.TestCase):
         self.assertEqual(result.exit_code, "resolve-only")
         self.assertEqual(result.model, "vendor/model:free")
         self.assertEqual(result.models_prompted, [])
+
+
+class VendorExclusionTests(unittest.TestCase):
+    def _cache(self, path: Path) -> None:
+        cache = {
+            "openrouter": {
+                "models": {
+                    "google/gemma-9-27b": {
+                        "name": "Gemma",
+                        "cost": {"input": 0, "output": 0},
+                        "limit": {"context": 128_000, "output": 8_000},
+                    },
+                    "nvidia/nemotron-test-70b": {
+                        "name": "Nemotron",
+                        "cost": {"input": 0, "output": 0},
+                        "limit": {"context": 128_000, "output": 8_000},
+                    },
+                }
+            }
+        }
+        path.write_text(json.dumps(cache), encoding="utf-8")
+
+    def test_excluded_by_vendor(self) -> None:
+        self.assertTrue(select_openrouter_free_model.excluded_by_vendor("google/gemma-9-27b", ["gemini"]))
+        self.assertTrue(select_openrouter_free_model.excluded_by_vendor("openai/gpt-oss-120b", ["codex"]))
+        self.assertTrue(select_openrouter_free_model.excluded_by_vendor("x-ai/grok-4-fast", ["grok"]))
+        self.assertFalse(select_openrouter_free_model.excluded_by_vendor("nvidia/nemotron-test-70b", ["gemini", "codex", "claude", "grok"]))
+        self.assertFalse(select_openrouter_free_model.excluded_by_vendor("google/gemma-9-27b", []))
+
+    def test_select_candidates_filters_ensemble_families(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cache_path = Path(temp_dir) / "models.json"
+            self._cache(cache_path)
+            unfiltered = select_openrouter_free_model.select_candidates(cache_path=cache_path, offline=True)
+            self.assertEqual(len(unfiltered), 2)
+            filtered = select_openrouter_free_model.select_candidates(
+                cache_path=cache_path, offline=True, exclude_families=["claude", "codex", "gemini", "grok"]
+            )
+            self.assertEqual([c.model_id for c in filtered], ["nvidia/nemotron-test-70b"])
+
+    def test_exhaustive_exclusion_raises_with_family_detail(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cache_path = Path(temp_dir) / "models.json"
+            cache = {
+                "openrouter": {
+                    "models": {
+                        "google/gemma-9-27b": {
+                            "name": "Gemma",
+                            "cost": {"input": 0, "output": 0},
+                            "limit": {"context": 128_000, "output": 8_000},
+                        }
+                    }
+                }
+            }
+            cache_path.write_text(json.dumps(cache), encoding="utf-8")
+            with self.assertRaises(RuntimeError) as ctx:
+                select_openrouter_free_model.select_candidates(
+                    cache_path=cache_path, offline=True, exclude_families=["gemini"]
+                )
+            self.assertIn("gemini", str(ctx.exception))
+
+
+class CliRetryTests(unittest.TestCase):
+    def test_generic_failure_retried_once(self) -> None:
+        calls = {"n": 0}
+
+        def run_once() -> run_ensemble.LegResult:
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return run_ensemble.LegResult(
+                    leg="codex", family="codex", model="m", exit_code=1, failure_reason="exit code 1"
+                )
+            return run_ensemble.LegResult(leg="codex", family="codex", model="m", ok=True, exit_code=0)
+
+        with mock.patch("builtins.print"):
+            result = run_ensemble.run_leg_with_retry(run_once)
+
+        self.assertEqual(calls["n"], 2)
+        self.assertTrue(result.ok)
+        cli_attempts = [attempt for attempt in result.attempts if attempt.get("phase") == "cli"]
+        self.assertEqual([attempt["attempt"] for attempt in cli_attempts], [1, 2])
+        self.assertTrue(cli_attempts[1]["ok"])
+
+    def test_auth_and_timeout_failures_not_retried(self) -> None:
+        for result in [
+            run_ensemble.LegResult(
+                leg="codex", family="codex", exit_code=1,
+                failure_reason="codex credentials need refresh", requires_user_action=True,
+            ),
+            run_ensemble.LegResult(leg="grok", family="grok", exit_code="timeout", failure_reason="timed out after 600s"),
+            run_ensemble.LegResult(leg="gemini", family="gemini", exit_code=1, failure_reason="agy quota or rate limit"),
+            run_ensemble.LegResult(leg="grok", family="grok", exit_code=0, failure_reason="grok sandbox could not be applied"),
+        ]:
+            calls = {"n": 0}
+
+            def run_once(result=result) -> run_ensemble.LegResult:
+                calls["n"] += 1
+                return result
+
+            with mock.patch("builtins.print"):
+                run_ensemble.run_leg_with_retry(run_once)
+            self.assertEqual(calls["n"], 1, msg=result.failure_reason)
+
+    def test_success_not_retried(self) -> None:
+        calls = {"n": 0}
+
+        def run_once() -> run_ensemble.LegResult:
+            calls["n"] += 1
+            return run_ensemble.LegResult(leg="codex", family="codex", ok=True, exit_code=0)
+
+        with mock.patch("builtins.print"):
+            result = run_ensemble.run_leg_with_retry(run_once)
+        self.assertEqual(calls["n"], 1)
+        self.assertTrue(result.ok)
+
+
+class BlindAnswersTests(unittest.TestCase):
+    def test_writes_shuffled_answers_with_separate_mapping(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            (temp_path / "codex.out").write_text("answer A", encoding="utf-8")
+            (temp_path / "grok.out").write_text("answer B", encoding="utf-8")
+            legs = [
+                run_ensemble.LegResult(leg="codex", family="codex", model="gpt-x", ok=True, stdout_path=str(temp_path / "codex.out")),
+                run_ensemble.LegResult(leg="grok", family="grok", model="grok-x", ok=True, stdout_path=str(temp_path / "grok.out")),
+                run_ensemble.LegResult(leg="gemini", family="gemini", ok=False, failure_reason="failed"),
+            ]
+            answers_dir = run_ensemble.write_blind_answers(legs, temp_path)
+
+            self.assertTrue(answers_dir.endswith("answers"))
+            answer_files = sorted(Path(answers_dir).glob("answer-*.txt"))
+            self.assertEqual(len(answer_files), 2)
+            contents = {path.read_text(encoding="utf-8") for path in answer_files}
+            self.assertEqual(contents, {"answer A", "answer B"})
+            mapping = json.loads((Path(answers_dir) / "mapping.json").read_text(encoding="utf-8"))
+            self.assertEqual(sorted(mapping), ["answer-1.txt", "answer-2.txt"])
+            self.assertEqual({entry["leg"] for entry in mapping.values()}, {"codex", "grok"})
+
+    def test_no_valid_answers_writes_nothing(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            legs = [run_ensemble.LegResult(leg="codex", family="codex", ok=False)]
+            self.assertEqual(run_ensemble.write_blind_answers(legs, Path(temp_dir)), "")
+            self.assertFalse((Path(temp_dir) / "answers").exists())
 
 
 class AuthClassificationTests(unittest.TestCase):

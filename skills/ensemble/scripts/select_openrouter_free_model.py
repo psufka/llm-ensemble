@@ -29,6 +29,24 @@ OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models"
 OPENROUTER_CHAT_URL = "https://openrouter.ai/api/v1/chat/completions"
 SMOKE_MARKER = "OPENROUTER_FREE_MODEL_SMOKE_OK"
 
+# OpenRouter vendor prefixes per ensemble model family, so the free-model
+# wildcard can be kept independent of labs already answering in the ensemble.
+FAMILY_VENDOR_PREFIXES = {
+    "claude": ("anthropic/",),
+    "codex": ("openai/",),
+    "gemini": ("google/",),
+    "grok": ("x-ai/", "xai/"),
+}
+
+
+def excluded_by_vendor(model_id: str, exclude_families: Iterable[str]) -> bool:
+    lowered = model_id.lower()
+    for family in exclude_families:
+        for prefix in FAMILY_VENDOR_PREFIXES.get(family, ()):
+            if lowered.startswith(prefix):
+                return True
+    return False
+
 
 @dataclass
 class Candidate:
@@ -247,23 +265,34 @@ def from_opencode_cache(path: Path) -> list[Candidate]:
     return candidates
 
 
-def select_candidates(cache_path: Path | None = None, offline: bool = False) -> list[Candidate]:
+def select_candidates(
+    cache_path: Path | None = None,
+    offline: bool = False,
+    exclude_families: Iterable[str] = (),
+) -> list[Candidate]:
+    exclude_families = tuple(exclude_families)
+
+    def usable(candidates: list[Candidate]) -> list[Candidate]:
+        kept = [c for c in candidates if not excluded_by_vendor(c.model_id, exclude_families)]
+        return sorted(kept, key=lambda c: c.score, reverse=True)
+
     errors: list[str] = []
     if not offline:
         try:
-            candidates = from_openrouter_api()
+            candidates = usable(from_openrouter_api())
             if candidates:
-                return sorted(candidates, key=lambda c: c.score, reverse=True)
+                return candidates
         except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError) as exc:
             errors.append(f"openrouter_api:{exc}")
     cache_path = cache_path or Path.home() / ".cache/opencode/models.json"
     try:
-        candidates = from_opencode_cache(cache_path)
+        candidates = usable(from_opencode_cache(cache_path))
         if candidates:
-            return sorted(candidates, key=lambda c: c.score, reverse=True)
+            return candidates
     except (OSError, json.JSONDecodeError) as exc:
         errors.append(f"opencode_cache:{exc}")
-    raise RuntimeError("No eligible free OpenRouter text models found. " + "; ".join(errors))
+    detail = f" (excluding families: {', '.join(exclude_families)})" if exclude_families else ""
+    raise RuntimeError(f"No eligible free OpenRouter text models found{detail}. " + "; ".join(errors))
 
 
 def smoke_model(candidate: Candidate, api_key: str, timeout: float) -> bool:
@@ -340,10 +369,16 @@ def main(argv: Iterable[str] | None = None) -> int:
     parser.add_argument("--smoke", action="store_true", help="prefer the first high-ranked model that passes an exact-output API smoke test")
     parser.add_argument("--smoke-limit", type=int, default=6, help="number of ranked candidates to smoke-test")
     parser.add_argument("--smoke-timeout", type=float, default=20, help="seconds per smoke-test request")
+    parser.add_argument(
+        "--exclude-family",
+        action="append",
+        choices=sorted(FAMILY_VENDOR_PREFIXES),
+        help="exclude free models from this ensemble family's vendor (repeatable)",
+    )
     args = parser.parse_args(argv)
 
     try:
-        candidates = select_candidates(cache_path=args.cache, offline=args.offline)
+        candidates = select_candidates(cache_path=args.cache, offline=args.offline, exclude_families=args.exclude_family or ())
     except RuntimeError as exc:
         raise SystemExit(str(exc)) from exc
     if args.list:

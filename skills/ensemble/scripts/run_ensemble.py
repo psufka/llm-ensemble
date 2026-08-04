@@ -7,6 +7,7 @@ import argparse
 import concurrent.futures
 import json
 import os
+import random
 import re
 import shutil
 import signal
@@ -195,6 +196,46 @@ def is_agy_auth_issue(text: str) -> bool:
         "unauthenticated",
     ]
     return any(term in lowered for term in auth_terms)
+
+
+RETRY_EXCLUDED_EXIT_CODES = {"timeout", "skipped-large-prompt", "not-found", "resolve-only"}
+
+
+def should_retry_leg(result: LegResult) -> bool:
+    if result.ok or result.skipped or result.requires_user_action:
+        return False
+    if result.exit_code in RETRY_EXCLUDED_EXIT_CODES:
+        return False
+    reason = result.failure_reason.lower()
+    if "quota or rate limit" in reason or "sandbox could not be applied" in reason:
+        return False
+    return True
+
+
+def run_leg_with_retry(run_once: Callable[[], LegResult]) -> LegResult:
+    first = run_once()
+    if not should_retry_leg(first):
+        return first
+    emit_model_event("retry", first.leg, first.family, first.model, f"cli retry after: {first.failure_reason}"[:200])
+    second = run_once()
+    second.attempts = [
+        {
+            "phase": "cli",
+            "attempt": 1,
+            "exit_code": first.exit_code,
+            "failure_reason": first.failure_reason,
+            "duration_seconds": first.duration_seconds,
+        },
+        {
+            "phase": "cli",
+            "attempt": 2,
+            "ok": second.ok,
+            "exit_code": second.exit_code,
+            "failure_reason": second.failure_reason,
+            "duration_seconds": second.duration_seconds,
+        },
+    ] + second.attempts
+    return second
 
 
 def classify_cli_auth_failure(result: LegResult, terms: list[str], action: str) -> LegResult:
@@ -672,9 +713,11 @@ def run_grok(output_dir: Path, prompt_file: Path, model: str, timeout: float, ke
     return classify_cli_auth_failure(result, GROK_AUTH_TERMS, GROK_AUTH_ACTION)
 
 
-def openrouter_attempt_candidates(args: argparse.Namespace) -> tuple[list[Any], list[dict[str, Any]]]:
-    candidates = select_openrouter_free_model.select_candidates()
+def openrouter_attempt_candidates(args: argparse.Namespace, exclude_families: tuple[str, ...] = ()) -> tuple[list[Any], list[dict[str, Any]]]:
+    candidates = select_openrouter_free_model.select_candidates(exclude_families=exclude_families)
     attempts: list[dict[str, Any]] = []
+    if exclude_families:
+        attempts.append({"phase": "selection", "excluded_families": list(exclude_families)})
     if getattr(args, "no_openrouter_smoke", False) or not os.environ.get("OPENROUTER_API_KEY"):
         return candidates[: args.openrouter_attempts], attempts
 
@@ -712,7 +755,7 @@ def openrouter_attempt_candidates(args: argparse.Namespace) -> tuple[list[Any], 
     return (passing or candidates)[: args.openrouter_attempts], attempts
 
 
-def run_openrouter(output_dir: Path, prompt: str, args: argparse.Namespace) -> LegResult:
+def run_openrouter(output_dir: Path, prompt: str, args: argparse.Namespace, exclude_families: tuple[str, ...] = ()) -> LegResult:
     stdout_path = output_dir / "openrouter.out"
     stderr_path = output_dir / "openrouter.err"
     result = LegResult(
@@ -732,7 +775,7 @@ def run_openrouter(output_dir: Path, prompt: str, args: argparse.Namespace) -> L
         write_text(stderr_path, result.skip_reason + "\n")
         return finalize_process_result(result, stdout_path, stderr_path)
     try:
-        candidates, selection_attempts = openrouter_attempt_candidates(args)
+        candidates, selection_attempts = openrouter_attempt_candidates(args, exclude_families)
         result.attempts.extend(selection_attempts)
     except Exception as exc:  # noqa: BLE001
         result.exit_code = "selection-error"
@@ -847,7 +890,7 @@ def resolve_and_run_claude(args: argparse.Namespace, output_dir: Path, external_
     emit_model_event("selected", "claude", "claude", model)
     if getattr(args, "resolve_only", False):
         return resolve_only_result("claude", "claude", model)
-    return run_claude(output_dir, external_prompt, model, args.timeout, args.agy_max_prompt_bytes)
+    return run_leg_with_retry(lambda: run_claude(output_dir, external_prompt, model, args.timeout, args.agy_max_prompt_bytes))
 
 
 def resolve_and_run_gemini(args: argparse.Namespace, output_dir: Path, external_prompt: str, get_agy_models: Callable[[], tuple[list[str], str, bool]]) -> LegResult:
@@ -868,7 +911,7 @@ def resolve_and_run_gemini(args: argparse.Namespace, output_dir: Path, external_
     emit_model_event("selected", "gemini", "gemini", model)
     if getattr(args, "resolve_only", False):
         return resolve_only_result("gemini", "gemini", model)
-    return run_gemini(output_dir, external_prompt, model, args.timeout, args.agy_max_prompt_bytes)
+    return run_leg_with_retry(lambda: run_gemini(output_dir, external_prompt, model, args.timeout, args.agy_max_prompt_bytes))
 
 
 def resolve_and_run_codex(args: argparse.Namespace, output_dir: Path, external_prompt: str) -> LegResult:
@@ -880,7 +923,7 @@ def resolve_and_run_codex(args: argparse.Namespace, output_dir: Path, external_p
     emit_model_event("selected", "codex", "codex", model, f"reasoning effort {effort}")
     if getattr(args, "resolve_only", False):
         return resolve_only_result("codex", "codex", model)
-    return run_codex(output_dir, external_prompt, model, effort, args.timeout)
+    return run_leg_with_retry(lambda: run_codex(output_dir, external_prompt, model, effort, args.timeout))
 
 
 def resolve_and_run_grok(args: argparse.Namespace, output_dir: Path, external_prompt_file: Path) -> LegResult:
@@ -891,7 +934,34 @@ def resolve_and_run_grok(args: argparse.Namespace, output_dir: Path, external_pr
     emit_model_event("selected", "grok", "grok", model)
     if getattr(args, "resolve_only", False):
         return resolve_only_result("grok", "grok", model)
-    return run_grok(output_dir, external_prompt_file, model, args.timeout, args.keep_workdirs)
+    return run_leg_with_retry(lambda: run_grok(output_dir, external_prompt_file, model, args.timeout, args.keep_workdirs))
+
+
+def write_blind_answers(legs: list[LegResult], output_dir: Path) -> str:
+    """Write valid answers in shuffled order with a separate identity mapping.
+
+    Enables blinded comparison: the orchestrator reads answer-N.txt files
+    first, forms its judgment, then opens mapping.json to unblind.
+    """
+    valid = [leg for leg in legs if leg.ok and leg.stdout_path and Path(leg.stdout_path).exists()]
+    if not valid:
+        return ""
+    answers_dir = output_dir / "answers"
+    answers_dir.mkdir(exist_ok=True)
+    shuffled = valid[:]
+    random.shuffle(shuffled)
+    mapping: dict[str, Any] = {}
+    for index, leg in enumerate(shuffled, start=1):
+        name = f"answer-{index}.txt"
+        write_text(answers_dir / name, read_text(Path(leg.stdout_path)))
+        mapping[name] = {
+            "leg": leg.leg,
+            "model": leg.model,
+            "display_model": display_model(leg.family, leg.model),
+            "truncated": leg.truncated,
+        }
+    write_text(answers_dir / "mapping.json", json.dumps(mapping, indent=2, sort_keys=True) + "\n")
+    return str(answers_dir)
 
 
 def prompted_model_rows(leg: LegResult) -> list[dict[str, Any]]:
@@ -972,6 +1042,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--openrouter-max-tokens", type=int, default=16_384)
     parser.add_argument("--openrouter-temperature", type=float, default=0.2)
     parser.add_argument("--no-openrouter-smoke", action="store_true")
+    parser.add_argument(
+        "--no-openrouter-family-filter",
+        action="store_true",
+        help="allow the free OpenRouter model to come from a vendor family already in the ensemble",
+    )
     parser.add_argument("--keep-workdirs", action="store_true")
     parser.add_argument(
         "--resolve-only",
@@ -1054,7 +1129,13 @@ def main() -> int:
         elif "openrouter" in skip_requested:
             legs.append(skip_result("openrouter", "openrouter", "skipped by --skip-leg/--only-leg"))
         else:
-            futures[executor.submit(run_openrouter, output_dir, prompt_text, args)] = "openrouter"
+            # Keep the free-model wildcard independent of labs already in the
+            # ensemble (orchestrator + submitted CLI legs).
+            ensemble_families = set(futures.values())
+            if args.orchestrator in ("claude", "codex", "gemini", "grok"):
+                ensemble_families.add(args.orchestrator)
+            openrouter_exclude = () if getattr(args, "no_openrouter_family_filter", False) else tuple(sorted(ensemble_families))
+            futures[executor.submit(run_openrouter, output_dir, prompt_text, args, openrouter_exclude)] = "openrouter"
 
         for future in concurrent.futures.as_completed(futures):
             leg_name = futures[future]
@@ -1078,13 +1159,17 @@ def main() -> int:
 
     order = {"claude": 0, "codex": 1, "gemini": 2, "grok": 3, "openrouter": 4}
     legs.sort(key=lambda leg: order.get(leg.leg, 99))
+    blind_answers_dir = "" if getattr(args, "resolve_only", False) else write_blind_answers(legs, output_dir)
     manifest = build_manifest(args, output_dir, prompt_file, external_prompt_file, legs)
+    manifest["blind_answers_dir"] = blind_answers_dir
     status_path = output_dir / "status.json"
     write_text(status_path, json.dumps(manifest, indent=2, sort_keys=True) + "\n")
 
     print(f"ENSEMBLE_DIR={output_dir}")
     print(f"STATUS_JSON={status_path}")
     print(f"MODE={manifest['mode']}")
+    if blind_answers_dir:
+        print(f"BLIND_ANSWERS_DIR={blind_answers_dir}")
     print(f"orchestrator\tok\t{display_model(args.orchestrator, args.orchestrator_model)}")
     if manifest["requires_user_action"]:
         print("USER_ACTION_REQUIRED=1")

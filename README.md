@@ -124,6 +124,23 @@ Handy flags: `--resolve-only` resolves and announces every leg's exact model *wi
 off at the token limit are flagged `"truncated": true` in `status.json` so a partial answer is never mistaken
 for a complete one.
 
+Three quality mechanisms on top of the fan-out:
+
+- **Blinded comparison (default).** The runner writes valid answers in shuffled order to
+  `answers/answer-N.txt` with the identity mapping in a separate `mapping.json`. The orchestrator compares
+  the anonymized answers first and only then unblinds — so "which lab wrote this" can't anchor the judgment.
+  Ask for an unblinded run to skip it.
+- **Free-model independence.** The OpenRouter wildcard skips free models from vendor families already in the
+  ensemble (no free Gemma while Gemini is answering) so agreement isn't just one lab agreeing with itself.
+  Disable with `--no-openrouter-family-filter`.
+- **Debate round (opt-in).** For consequential questions where the answers materially disagree, the
+  orchestrator proposes a second round: each model sees the anonymized round-1 answers, critiques them, and
+  revises. Roughly doubles cost, so it's proposed, not automatic — or opt in up front with
+  "ensemble with debate".
+
+CLI legs are also retried once on generic failures (not auth, quota, timeout, or sandbox failures), and the
+retry is reported as a `retry` event.
+
 `status.json` contains the exact orchestrator model, every model that actually received the user's prompt,
 selected models, per-leg exit codes, durations, stdout/stderr paths,
 stdout/stderr sizes, skip reasons, failure reasons, and OpenRouter retry attempts. The orchestrator reads only
