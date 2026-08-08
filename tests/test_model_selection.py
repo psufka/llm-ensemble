@@ -47,6 +47,22 @@ class ClaudeModelSelectionTests(unittest.TestCase):
         lines = ["claude-opus-4-5-thinking", "claude-opus-4-6-thinking"]
         self.assertEqual(run_ensemble.choose_claude_model(lines), "claude-opus-4-6-thinking")
 
+    def test_tab_separated_id_and_display_columns(self) -> None:
+        # Real agy output observed 2026-08-08: "model-id<TAB>Display Name".
+        # Only the id column is a valid --model value, but the display column
+        # may carry information missing from the slug (here: Thinking).
+        lines = [
+            "claude-sonnet-4-6\tClaude Sonnet 4.6 (Thinking)",
+            "claude-opus-4-6-thinking\tClaude Opus 4.6 (Thinking)",
+        ]
+        self.assertEqual(run_ensemble.choose_claude_model(lines), "claude-opus-4-6-thinking")
+        # Thinking-only-in-display still beats a non-thinking sibling slug.
+        lines = [
+            "claude-opus-4-6\tClaude Opus 4.6",
+            "claude-opus-4-6-t\tClaude Opus 4.6 (Thinking)",
+        ]
+        self.assertEqual(run_ensemble.choose_claude_model(lines), "claude-opus-4-6-t")
+
 
 class GeminiModelSelectionTests(unittest.TestCase):
     def test_ultra_outranks_pro_regardless_of_version(self) -> None:
@@ -74,6 +90,19 @@ class GeminiModelSelectionTests(unittest.TestCase):
         self.assertEqual(run_ensemble.parse_gemini_version("gemini-3.1-pro-high"), (3, 1))
         self.assertEqual(run_ensemble.parse_model_tier("gemini-3.1-pro-high"), 3)
         self.assertEqual(run_ensemble.parse_model_tier("Gemini 3.1 Pro (High)"), 3)
+
+    def test_tab_separated_id_and_display_columns(self) -> None:
+        # Real agy output observed 2026-08-08: "model-id<TAB>Display Name".
+        # Passing the whole line as --model made agy exit 1 and killed the leg.
+        lines = [
+            "Fetching available models...",
+            "gemini-3.6-flash-high\tGemini 3.6 Flash (High)",
+            "gemini-3.1-pro-high\tGemini 3.1 Pro (High)",
+            "gemini-3.1-pro-low\tGemini 3.1 Pro (Low)",
+        ]
+        self.assertEqual(run_ensemble.choose_gemini_model(lines), "gemini-3.1-pro-high")
+        self.assertEqual(run_ensemble.agy_model_id("gemini-3.1-pro-high\tGemini 3.1 Pro (High)"), "gemini-3.1-pro-high")
+        self.assertEqual(run_ensemble.agy_model_id("Gemini 3.1 Pro (High)"), "Gemini 3.1 Pro (High)")
 
 
 class GrokModelSelectionTests(unittest.TestCase):
