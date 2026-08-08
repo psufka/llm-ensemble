@@ -363,6 +363,12 @@ def parse_model_tier(model: str) -> int:
     return best
 
 
+def agy_model_id(raw_line: str) -> str:
+    # `agy models` output is either a bare model name or, since 2026-08,
+    # "model-id<TAB>Display Name"; only the first column is a valid --model value.
+    return raw_line.split("\t", 1)[0].strip()
+
+
 def gemini_quality_score(model: str) -> int:
     lowered = model.lower()
     if "ultra" in lowered:
@@ -383,7 +389,9 @@ def choose_gemini_model(lines: list[str]) -> str:
         lowered = model.lower()
         if not model or "gemini" not in lowered:
             continue
-        candidates.append((gemini_quality_score(model), parse_gemini_version(model), parse_model_tier(model), model))
+        # Score on the full line (display column carries tier info) but keep
+        # only the model-id column as the selectable value.
+        candidates.append((gemini_quality_score(model), parse_gemini_version(model), parse_model_tier(model), agy_model_id(raw_line)))
     if not candidates:
         return ""
     return sorted(candidates, reverse=True)[0][3]
@@ -422,7 +430,9 @@ def choose_claude_model(lines: list[str]) -> str:
         if not model or not any(term in lowered for term in ("claude", "mythos", "fable")):
             continue
         thinking = 1 if "thinking" in lowered else 0
-        candidates.append((claude_quality_score(model), parse_claude_version(model), thinking, model))
+        # Score on the full line ("Thinking" may only appear in the display
+        # column) but keep only the model-id column as the selectable value.
+        candidates.append((claude_quality_score(model), parse_claude_version(model), thinking, agy_model_id(raw_line)))
     if not candidates:
         return ""
     return sorted(candidates, reverse=True)[0][3]
