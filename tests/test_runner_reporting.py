@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 import tempfile
 import unittest
@@ -187,6 +188,90 @@ class RunnerReportingTests(unittest.TestCase):
             [attempt["passed"] for attempt in attempts],
             [False, True, False, True, True, True],
         )
+
+
+class PinnedDispatchTests(unittest.TestCase):
+    def _args(self, temp_path: Path, **overrides: object) -> argparse.Namespace:
+        prompt_path = temp_path / "prompt.txt"
+        prompt_path.write_text("test prompt", encoding="utf-8")
+        base: dict[str, object] = dict(
+            orchestrator="other",
+            orchestrator_model="test-runtime",
+            prompt_file=prompt_path,
+            output_dir=temp_path / "output",
+            timeout=10,
+            agy_max_prompt_bytes=100_000,
+            codex_model="",
+            codex_effort="",
+            grok_model="",
+            keep_workdirs=False,
+            resolve_only=False,
+            skip_leg=None,
+            only_leg=None,
+            openrouter_model="moonshotai/kimi-k3",
+            openrouter_swap=False,
+        )
+        base.update(overrides)
+        return argparse.Namespace(**base)
+
+    def _run_main(self, args: argparse.Namespace) -> tuple[mock.MagicMock, mock.MagicMock]:
+        free_result = run_ensemble.LegResult(leg="openrouter", family="openrouter", model="nvidia/x:free", ok=True)
+        pinned_result = run_ensemble.LegResult(
+            leg="openrouter-pinned", family="openrouter-pinned", model="moonshotai/kimi-k3", ok=True
+        )
+        with mock.patch.object(run_ensemble, "parse_args", return_value=args), mock.patch.object(
+            run_ensemble,
+            "command_exists",
+            return_value=False,
+        ), mock.patch.object(
+            run_ensemble,
+            "run_openrouter",
+            return_value=free_result,
+        ) as free_leg, mock.patch.object(
+            run_ensemble,
+            "run_openrouter_pinned",
+            return_value=pinned_result,
+        ) as pinned_leg, mock.patch("builtins.print"):
+            self.assertEqual(run_ensemble.main(), 0)
+        return free_leg, pinned_leg
+
+    def test_pinned_model_adds_leg_and_excludes_vendor_from_free_pick(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            free_leg, pinned_leg = self._run_main(self._args(temp_path))
+            status = json.loads((temp_path / "output" / "status.json").read_text(encoding="utf-8"))
+
+        pinned_leg.assert_called_once()
+        free_leg.assert_called_once()
+        self.assertIn("moonshotai/", free_leg.call_args.args[3])
+        states = {leg["leg"]: leg for leg in status["legs"]}
+        self.assertTrue(states["openrouter"]["ok"])
+        self.assertTrue(states["openrouter-pinned"]["ok"])
+        self.assertEqual(status["mode"], "full")
+
+    def test_swap_replaces_free_leg_with_skip_reason(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            free_leg, pinned_leg = self._run_main(self._args(temp_path, openrouter_swap=True))
+            status = json.loads((temp_path / "output" / "status.json").read_text(encoding="utf-8"))
+
+        pinned_leg.assert_called_once()
+        free_leg.assert_not_called()
+        states = {leg["leg"]: leg for leg in status["legs"]}
+        self.assertTrue(states["openrouter"]["skipped"])
+        self.assertEqual(states["openrouter"]["skip_reason"], "swapped for pinned model moonshotai/kimi-k3")
+        self.assertTrue(states["openrouter-pinned"]["ok"])
+
+    def test_no_pinned_model_keeps_current_behavior(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            free_leg, pinned_leg = self._run_main(self._args(temp_path, openrouter_model=""))
+            status = json.loads((temp_path / "output" / "status.json").read_text(encoding="utf-8"))
+
+        pinned_leg.assert_not_called()
+        free_leg.assert_called_once()
+        self.assertEqual(free_leg.call_args.args[3], ())
+        self.assertNotIn("openrouter-pinned", {leg["leg"] for leg in status["legs"]})
 
 
 if __name__ == "__main__":

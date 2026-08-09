@@ -29,6 +29,7 @@ Antigravity/`agy`. The ensemble never spawns the direct Claude CLI.
 | External leg | **Gemini** (Google, via Antigravity) | best available Gemini model from `agy models`; skipped when Gemini is the orchestrator |
 | External leg | **Grok** (xAI) | current default resolved from `grok models` and explicitly pinned; skipped when Grok is the orchestrator |
 | External leg | **OpenRouter** | `<exact model/version> (free)`, selected dynamically; skipped when OpenRouter is the orchestrator |
+| External leg (opt-in) | **OpenRouter pinned** | any model you name with `--openrouter-model` (free or paid) — runs alongside the free leg by default, or replaces it with `--openrouter-swap` |
 
 ## Setup
 
@@ -55,7 +56,7 @@ curl -fsSL https://x.ai/cli/install.sh | bash                 # installs `grok`
 Grok: sign in at grok.com on first run (or set `XAI_API_KEY` for headless use). Each tool prompts for
 auth on first run (Anthropic / OpenAI / Google / xAI).
 
-OpenRouter: set `OPENROUTER_API_KEY` if you want the free-model wildcard:
+OpenRouter: set `OPENROUTER_API_KEY` if you want the free-model wildcard or a pinned model of your choice:
 
 ```bash
 export OPENROUTER_API_KEY="..."
@@ -120,7 +121,9 @@ MODE=<full|degraded-second-opinion|failed-no-external-answers|needs-user-action|
 ```
 
 Handy flags: `--resolve-only` resolves and announces every leg's exact model *without* sending the prompt
-(a fast model-freshness check), and `--skip-leg`/`--only-leg` control which legs run. OpenRouter answers cut
+(a fast model-freshness check), and `--skip-leg`/`--only-leg` control which legs run. `--openrouter-model
+vendor/model` pins any OpenRouter model (free or paid) as an extra `openrouter-pinned` leg on top of the free
+wildcard; add `--openrouter-swap` to have it replace the free leg instead. OpenRouter answers cut
 off at the token limit are flagged `"truncated": true` in `status.json` so a partial answer is never mistaken
 for a complete one.
 
@@ -131,8 +134,8 @@ Three quality mechanisms on top of the fan-out:
   the anonymized answers first and only then unblinds — so "which lab wrote this" can't anchor the judgment.
   Ask for an unblinded run to skip it.
 - **Free-model independence.** The OpenRouter wildcard skips free models from vendor families already in the
-  ensemble (no free Gemma while Gemini is answering) so agreement isn't just one lab agreeing with itself.
-  Disable with `--no-openrouter-family-filter`.
+  ensemble (no free Gemma while Gemini is answering) — including a pinned model's vendor, so pinning Kimi
+  keeps the free pick away from other Moonshot models. Disable with `--no-openrouter-family-filter`.
 - **Debate round (opt-in).** For consequential questions where the answers materially disagree, the
   orchestrator proposes a second round: each model sees the anonymized round-1 answers, critiques them, and
   revises. Roughly doubles cost, so it's proposed, not automatic — or opt in up front with
@@ -233,6 +236,12 @@ These CLIs are coding *agents* — normally they read, write, and run commands. 
   With `--smoke` and `OPENROUTER_API_KEY`, it probes the top candidates and prefers the first one that passes
   a tiny exact-output API test, which catches rate-limited or weak-instruction-following free models. During
   the real prompt, `run_ensemble.py` retries alternate free models on retryable upstream/capacity failures.
+
+- **OpenRouter pinned model** - `--openrouter-model vendor/model` runs the exact model you name as its own
+  `openrouter-pinned` leg (labeled `<model id> (openrouter pinned)` in the roster). It gets no smoke test and
+  no fallback to other models — you chose it — just one retry on retryable upstream errors and a max-tokens
+  clamp from the model's metadata (important for reasoning models with small completion caps). Additive by
+  default; `--openrouter-swap` replaces the free wildcard with it.
 
 ## When to use it
 

@@ -1,7 +1,7 @@
 ---
 name: ensemble
 description: >-
-  Run a question through a runtime-aware multi-model ensemble — the current orchestrator plus external legs (Claude via Antigravity/agy when Claude is not the orchestrator, OpenAI Codex, Google Gemini via agy, xAI Grok, best free OpenRouter model) — then compare answers and synthesize one recommendation with an exact model roster. Use when the user says "ensemble", "/ensemble", asks for a cross-model second opinion, or wants to fact-check or stress-test an important decision, claim, or piece of writing.
+  Run a question through a runtime-aware multi-model ensemble — the current orchestrator plus external legs (Claude via Antigravity/agy when Claude is not the orchestrator, OpenAI Codex, Google Gemini via agy, xAI Grok, best free OpenRouter model, optionally a user-named OpenRouter model pinned alongside or in place of the free one) — then compare answers and synthesize one recommendation with an exact model roster. Use when the user says "ensemble", "/ensemble", asks for a cross-model second opinion, or wants to fact-check or stress-test an important decision, claim, or piece of writing.
 ---
 
 # Ensemble
@@ -36,6 +36,15 @@ The runner uses every available external leg except the current orchestrator fam
 | Gemini | orchestrator is not Gemini/Google and `agy` is installed/authenticated | best available Gemini model from `agy models` |
 | Grok | orchestrator is not Grok/xAI and `grok` is installed/authenticated | `grok` CLI default |
 | OpenRouter free | orchestrator is not OpenRouter and `OPENROUTER_API_KEY` is set | best free text model selected dynamically |
+| OpenRouter pinned | the user names an OpenRouter model (any pricing) and `OPENROUTER_API_KEY` is set | the exact model id the user asked for, via `--openrouter-model` |
+
+The pinned leg exists only when the user names a model. Map the user's phrasing to flags:
+
+- "ensemble on X" → no pinned flags; free leg only (current default behavior).
+- "ensemble on X and **also use** `vendor/model`" → add `--openrouter-model vendor/model`; the pinned leg runs **in addition to** the free leg.
+- "ensemble on X and use `vendor/model` **instead of** the free model" → add `--openrouter-model vendor/model --openrouter-swap`; the pinned leg **replaces** the free leg.
+
+Pass the model id exactly as OpenRouter spells it (e.g. `moonshotai/kimi-k3`). If the user names a model loosely ("kimi", "the paid kimi"), resolve it to the exact OpenRouter id before invoking the runner, and confirm with the user if ambiguous.
 
 Proceed as a full ensemble only with at least two external answers plus your own orchestrator answer. If exactly one external model answers, call it a degraded second opinion. If none answer, stop and report the failures.
 
@@ -68,9 +77,9 @@ When the user asks for an ensemble:
    MODEL_EVENT={"event":"selected","leg":"gemini","model":"Gemini 3.1 Pro (High)",...}
    ```
 
-   Relay each `selected` event to the user immediately in the same concise roster format, using `display_model` verbatim. Do not narrate model resolution or say that models are resolving; announce a leg only after its exact model/version is known. Do not wait for the full ensemble to finish. If a leg retries the user's prompt on a fallback model, relay that `retry` event too. Do not count smoke-test models as having received the user's prompt. Because the roster already labels the leg as OpenRouter, display its model as `<exact model/version> (free)`. The runner also emits a `finished` event as each leg completes (with `ok` and duration) — use it to track progress; there is no need to relay each one.
+   Relay each `selected` event to the user immediately in the same concise roster format, using `display_model` verbatim. Do not narrate model resolution or say that models are resolving; announce a leg only after its exact model/version is known. Do not wait for the full ensemble to finish. If a leg retries the user's prompt on a fallback model, relay that `retry` event too. Do not count smoke-test models as having received the user's prompt. Because the roster already labels the leg as OpenRouter, display the free leg's model as `<exact model/version> (free)` and a pinned leg's model as `<exact model id> (openrouter pinned)`. The runner also emits a `finished` event as each leg completes (with `ok` and duration) — use it to track progress; there is no need to relay each one.
 
-   Useful flags: `--resolve-only` resolves and announces every leg's exact model without sending the user prompt (use it for model-freshness checks); `--skip-leg <leg>` / `--only-leg <leg>` (repeatable) control which legs run.
+   Useful flags: `--resolve-only` resolves and announces every leg's exact model without sending the user prompt (use it for model-freshness checks); `--skip-leg <leg>` / `--only-leg <leg>` (repeatable) control which legs run; `--openrouter-model <id>` pins a user-named OpenRouter model as an additional leg; `--openrouter-swap` makes that pinned model replace the free leg instead.
 
    The runner prints these completion pointers at the end:
 
@@ -93,7 +102,7 @@ When the user asks for an ensemble:
    - strongest reasoning or blind spot from each valid model
    - your final recommendation
    - confidence and what would change the answer
-   - a final **Models used** roster as the last section: orchestrator plus every top-level `models_prompted` row, labeling `attempt_ok: false` attempts as failed; render the already-labeled OpenRouter leg as `<exact model/version> (free)`
+   - a final **Models used** roster as the last section: orchestrator plus every top-level `models_prompted` row, labeling `attempt_ok: false` attempts as failed; render the free OpenRouter leg as `<exact model/version> (free)` and a pinned OpenRouter leg as `<exact model id> (openrouter pinned)`
 
 Do not paste raw transcripts unless the user asks. Quote short excerpts only when useful.
 
@@ -125,7 +134,8 @@ Mechanics: write a new prompt file containing the original question plus the ano
 - Kills the whole process group on timeout so hung CLI children do not linger.
 - Runs Grok with `--no-memory`, `--sandbox read-only`, a throwaway cwd, and a sandbox-failure guard.
 - Retries each CLI leg once on generic failures (emitting a `retry` event); auth, quota/rate-limit, timeout, oversized-prompt, and sandbox failures are not retried.
-- Excludes free OpenRouter candidates from vendor families already in the ensemble (orchestrator + active legs) so the wildcard adds an independent lab; disable with `--no-openrouter-family-filter`.
+- Excludes free OpenRouter candidates from vendor families already in the ensemble (orchestrator + active legs + a pinned model's vendor) so the wildcard adds an independent lab; disable with `--no-openrouter-family-filter`.
+- Runs a user-pinned OpenRouter model (`--openrouter-model`) as its own `openrouter-pinned` leg — additive by default, replacing the free leg with `--openrouter-swap`. The pinned model gets no smoke test and no fallback to other models (it was chosen deliberately), one retry on retryable upstream errors, and the same max-tokens clamp from its metadata. Both OpenRouter legs count toward the two-external-answers threshold for a full ensemble.
 - Writes valid answers in shuffled order to `answers/answer-N.txt` with a separate `answers/mapping.json`, enabling the blinded-comparison workflow.
 - Selects and concurrently smoke-tests free OpenRouter models, then retries alternate free candidates on retryable upstream/capacity failures.
 - Clamps OpenRouter max tokens to the model's completion limit and flags answers cut off at the limit as `truncated`.

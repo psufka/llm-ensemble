@@ -2,6 +2,13 @@
 
 Notable changes to `llm-ensemble`.
 
+## 2026-08-09
+
+### Added
+
+- Added a user-pinned OpenRouter leg: `--openrouter-model <id>` runs any OpenRouter model (free or paid) as a new `openrouter-pinned` leg **in addition to** the free-model wildcard by default; `--openrouter-swap` makes it **replace** the free leg instead. Plain runs without the flag are unchanged. The pinned model is labeled `<model id> (openrouter pinned)` in events, roster, `status.json`, and blind-answer mapping; it gets no smoke test and no fallback (one retry on retryable upstream errors), and its `max_tokens` is clamped from model metadata via the new `find_model()` lookup (no pricing filter).
+- The free-model wildcard now also excludes the pinned model's vendor prefix (pinning `moonshotai/kimi-k3` keeps the free pick away from other Moonshot models); `excluded_by_vendor()` accepts raw `vendor/` prefixes alongside family names.
+
 ## 2026-08-04
 
 ### Added

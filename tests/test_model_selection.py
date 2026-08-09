@@ -229,6 +229,194 @@ class OpenRouterTruncationTests(unittest.TestCase):
         self.assertEqual(result.models_prompted, [])
 
 
+class PinnedOpenRouterTests(unittest.TestCase):
+    def _args(self, **overrides: object) -> argparse.Namespace:
+        base: dict[str, object] = dict(
+            openrouter_model="moonshotai/kimi-k3",
+            openrouter_swap=False,
+            openrouter_temperature=0.2,
+            openrouter_max_tokens=16_384,
+            openrouter_timeout=600,
+            resolve_only=False,
+        )
+        base.update(overrides)
+        return argparse.Namespace(**base)
+
+    def test_pinned_leg_queries_named_model_and_clamps_max_tokens(self) -> None:
+        candidate = SimpleNamespace(model_id="moonshotai/kimi-k3", name="Kimi K3", output=1000)
+        with tempfile.TemporaryDirectory() as temp_dir, mock.patch.dict(
+            run_ensemble.os.environ,
+            {"OPENROUTER_API_KEY": "test-key"},
+        ), mock.patch.object(
+            run_ensemble.select_openrouter_free_model,
+            "find_model",
+            return_value=candidate,
+        ), mock.patch.object(
+            run_ensemble.openrouter_query,
+            "query_openrouter",
+            return_value=("answer", "stop"),
+        ) as query, mock.patch("builtins.print"):
+            result = run_ensemble.run_openrouter_pinned(Path(temp_dir), "prompt", self._args())
+
+        self.assertTrue(result.ok)
+        self.assertEqual(result.leg, "openrouter-pinned")
+        self.assertEqual(result.family, "openrouter-pinned")
+        self.assertEqual(result.model, "moonshotai/kimi-k3")
+        self.assertEqual(query.call_args.args[1], "moonshotai/kimi-k3")
+        self.assertEqual(query.call_args.kwargs["max_tokens"], 1000)
+        lookup = [attempt for attempt in result.attempts if attempt.get("phase") == "lookup"][0]
+        self.assertTrue(lookup["found"])
+        self.assertEqual(lookup["max_tokens"], 1000)
+
+    def test_pinned_lookup_failure_uses_unclamped_max_tokens(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir, mock.patch.dict(
+            run_ensemble.os.environ,
+            {"OPENROUTER_API_KEY": "test-key"},
+        ), mock.patch.object(
+            run_ensemble.select_openrouter_free_model,
+            "find_model",
+            return_value=None,
+        ), mock.patch.object(
+            run_ensemble.openrouter_query,
+            "query_openrouter",
+            return_value=("answer", "stop"),
+        ) as query, mock.patch("builtins.print"):
+            result = run_ensemble.run_openrouter_pinned(Path(temp_dir), "prompt", self._args())
+
+        self.assertTrue(result.ok)
+        self.assertEqual(query.call_args.kwargs["max_tokens"], 16_384)
+        lookup = [attempt for attempt in result.attempts if attempt.get("phase") == "lookup"][0]
+        self.assertFalse(lookup["found"])
+
+    def test_pinned_retryable_error_retries_same_model_once(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir, mock.patch.dict(
+            run_ensemble.os.environ,
+            {"OPENROUTER_API_KEY": "test-key"},
+        ), mock.patch.object(
+            run_ensemble.select_openrouter_free_model,
+            "find_model",
+            return_value=None,
+        ), mock.patch.object(
+            run_ensemble.openrouter_query,
+            "query_openrouter",
+            side_effect=[
+                openrouter_query.OpenRouterError("rate limit", retryable=True),
+                ("answer", "stop"),
+            ],
+        ) as query, mock.patch("builtins.print"):
+            result = run_ensemble.run_openrouter_pinned(Path(temp_dir), "prompt", self._args())
+
+        self.assertTrue(result.ok)
+        self.assertEqual(query.call_count, 2)
+        self.assertEqual(result.models_prompted, ["moonshotai/kimi-k3", "moonshotai/kimi-k3"])
+
+    def test_pinned_non_retryable_error_does_not_retry(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir, mock.patch.dict(
+            run_ensemble.os.environ,
+            {"OPENROUTER_API_KEY": "test-key"},
+        ), mock.patch.object(
+            run_ensemble.select_openrouter_free_model,
+            "find_model",
+            return_value=None,
+        ), mock.patch.object(
+            run_ensemble.openrouter_query,
+            "query_openrouter",
+            side_effect=openrouter_query.OpenRouterError("invalid model", retryable=False),
+        ) as query, mock.patch("builtins.print"):
+            result = run_ensemble.run_openrouter_pinned(Path(temp_dir), "prompt", self._args())
+
+        self.assertFalse(result.ok)
+        self.assertEqual(query.call_count, 1)
+        self.assertIn("invalid model", result.failure_reason)
+
+    def test_pinned_resolve_only_announces_without_prompting(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir, mock.patch.dict(
+            run_ensemble.os.environ,
+            {"OPENROUTER_API_KEY": "test-key"},
+        ), mock.patch.object(
+            run_ensemble.openrouter_query,
+            "query_openrouter",
+        ) as query, mock.patch("builtins.print"):
+            result = run_ensemble.run_openrouter_pinned(Path(temp_dir), "", self._args(resolve_only=True))
+
+        query.assert_not_called()
+        self.assertTrue(result.skipped)
+        self.assertEqual(result.exit_code, "resolve-only")
+        self.assertEqual(result.model, "moonshotai/kimi-k3")
+
+    def test_pinned_skips_without_api_key(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir, mock.patch.dict(
+            run_ensemble.os.environ,
+            {},
+            clear=True,
+        ), mock.patch("builtins.print"):
+            result = run_ensemble.run_openrouter_pinned(Path(temp_dir), "prompt", self._args())
+
+        self.assertTrue(result.skipped)
+        self.assertEqual(result.skip_reason, "OPENROUTER_API_KEY is not set")
+
+    def test_display_model_pinned_label(self) -> None:
+        self.assertEqual(
+            run_ensemble.display_model("openrouter-pinned", "moonshotai/kimi-k3"),
+            "moonshotai/kimi-k3 (openrouter pinned)",
+        )
+        # The pinned label is literal — no :free stripping; the pin is the point.
+        self.assertEqual(
+            run_ensemble.display_model("openrouter-pinned", "vendor/model:free"),
+            "vendor/model:free (openrouter pinned)",
+        )
+        self.assertEqual(
+            run_ensemble.display_model("openrouter", "vendor/model:free"),
+            "vendor/model (free)",
+        )
+
+
+class FindModelTests(unittest.TestCase):
+    def _cache(self, path: Path) -> None:
+        cache = {
+            "openrouter": {
+                "models": {
+                    "moonshotai/kimi-k3": {
+                        "name": "Kimi K3",
+                        "cost": {"input": 1.5, "output": 6},
+                        "limit": {"context": 256_000, "output": 8_192},
+                        "reasoning": True,
+                    }
+                }
+            }
+        }
+        path.write_text(json.dumps(cache), encoding="utf-8")
+
+    def test_find_model_uses_cache_without_free_filter(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cache_path = Path(temp_dir) / "models.json"
+            self._cache(cache_path)
+            with mock.patch.object(
+                select_openrouter_free_model.urllib.request,
+                "urlopen",
+                side_effect=select_openrouter_free_model.urllib.error.URLError("offline"),
+            ):
+                candidate = select_openrouter_free_model.find_model("moonshotai/kimi-k3", cache_path=cache_path)
+
+        self.assertIsNotNone(candidate)
+        self.assertEqual(candidate.model_id, "moonshotai/kimi-k3")
+        self.assertEqual(candidate.output, 8_192)
+        self.assertTrue(candidate.reasoning)
+
+    def test_find_model_unknown_id_returns_none(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cache_path = Path(temp_dir) / "models.json"
+            self._cache(cache_path)
+            with mock.patch.object(
+                select_openrouter_free_model.urllib.request,
+                "urlopen",
+                side_effect=select_openrouter_free_model.urllib.error.URLError("offline"),
+            ):
+                candidate = select_openrouter_free_model.find_model("vendor/unknown-model", cache_path=cache_path)
+
+        self.assertIsNone(candidate)
+
+
 class VendorExclusionTests(unittest.TestCase):
     def _cache(self, path: Path) -> None:
         cache = {
@@ -255,6 +443,14 @@ class VendorExclusionTests(unittest.TestCase):
         self.assertTrue(select_openrouter_free_model.excluded_by_vendor("x-ai/grok-4-fast", ["grok"]))
         self.assertFalse(select_openrouter_free_model.excluded_by_vendor("nvidia/nemotron-test-70b", ["gemini", "codex", "claude", "grok"]))
         self.assertFalse(select_openrouter_free_model.excluded_by_vendor("google/gemma-9-27b", []))
+
+    def test_raw_vendor_prefix_excluded(self) -> None:
+        # Prefixes ending in "/" pass straight through — how the runner keeps
+        # the free wildcard away from a pinned model's lab.
+        self.assertTrue(select_openrouter_free_model.excluded_by_vendor("moonshotai/kimi-k3:free", ["moonshotai/"]))
+        self.assertFalse(select_openrouter_free_model.excluded_by_vendor("nvidia/nemotron-test-70b", ["moonshotai/"]))
+        # Unknown non-prefix entries are ignored rather than matching anything.
+        self.assertFalse(select_openrouter_free_model.excluded_by_vendor("nvidia/nemotron-test-70b", ["openrouter-pinned"]))
 
     def test_select_candidates_filters_ensemble_families(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

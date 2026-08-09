@@ -42,7 +42,12 @@ FAMILY_VENDOR_PREFIXES = {
 def excluded_by_vendor(model_id: str, exclude_families: Iterable[str]) -> bool:
     lowered = model_id.lower()
     for family in exclude_families:
-        for prefix in FAMILY_VENDOR_PREFIXES.get(family, ()):
+        prefixes = FAMILY_VENDOR_PREFIXES.get(family)
+        if prefixes is None:
+            # Entries ending in "/" are raw vendor prefixes (e.g. "moonshotai/"),
+            # used to keep the free wildcard independent of a pinned model's lab.
+            prefixes = (family.lower(),) if family.endswith("/") else ()
+        for prefix in prefixes:
             if lowered.startswith(prefix):
                 return True
     return False
@@ -293,6 +298,54 @@ def select_candidates(
         errors.append(f"opencode_cache:{exc}")
     detail = f" (excluding families: {', '.join(exclude_families)})" if exclude_families else ""
     raise RuntimeError(f"No eligible free OpenRouter text models found{detail}. " + "; ".join(errors))
+
+
+def find_model(model_id: str, cache_path: Path | None = None, timeout: float = 10.0) -> Candidate | None:
+    """Look up metadata for an arbitrary OpenRouter model id, free or paid.
+
+    Unlike select_candidates this applies no pricing or capability filters —
+    it exists so the runner can clamp max_tokens for a user-pinned model.
+    Returns None when the id is unknown or both metadata sources fail.
+    """
+    wanted = model_id.strip().lower()
+    if not wanted:
+        return None
+    try:
+        req = urllib.request.Request(OPENROUTER_MODELS_URL, headers={"Accept": "application/json"})
+        with urllib.request.urlopen(req, timeout=timeout) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+        data = payload.get("data", payload if isinstance(payload, list) else [])
+        for model in data:
+            if not isinstance(model, dict) or str(model.get("id") or "").lower() != wanted:
+                continue
+            name = str(model.get("name") or model_id)
+            context = as_int(model.get("context_length") or (model.get("top_provider") or {}).get("context_length"))
+            output = as_int((model.get("top_provider") or {}).get("max_completion_tokens") or model.get("max_completion_tokens"))
+            supported = [str(x).lower() for x in model.get("supported_parameters", []) if isinstance(x, str)]
+            reasoning = "reasoning" in supported or "include_reasoning" in supported
+            structured = "response_format" in supported or "structured_outputs" in supported
+            release_date = normalize_release_date(model.get("created") or model.get("release_date"))
+            return Candidate(model_id, name, context, output, reasoning, structured, release_date, "openrouter_api", 0.0, "pinned lookup")
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError):
+        pass
+    cache_path = cache_path or Path.home() / ".cache/opencode/models.json"
+    try:
+        payload = json.loads(cache_path.read_text(encoding="utf-8"))
+        models = (((payload.get("openrouter") or {}).get("models")) or {})
+        for cache_id, model in models.items():
+            if str(cache_id).lower() != wanted or not isinstance(model, dict):
+                continue
+            name = str(model.get("name") or model_id)
+            limit = model.get("limit") or {}
+            context = as_int(limit.get("context"))
+            output = as_int(limit.get("output"))
+            reasoning = bool(model.get("reasoning"))
+            structured = bool(model.get("structured_output"))
+            release_date = str(model.get("release_date") or model.get("last_updated") or "")
+            return Candidate(model_id, name, context, output, reasoning, structured, release_date, "opencode_cache", 0.0, "pinned lookup")
+    except (OSError, json.JSONDecodeError):
+        pass
+    return None
 
 
 def smoke_model(candidate: Candidate, api_key: str, timeout: float) -> bool:
