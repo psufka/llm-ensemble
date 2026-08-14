@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 
-OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models"
+OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models?sort=intelligence-high-to-low"
 OPENROUTER_CHAT_URL = "https://openrouter.ai/api/v1/chat/completions"
 SMOKE_MARKER = "OPENROUTER_FREE_MODEL_SMOKE_OK"
 
@@ -65,6 +65,10 @@ class Candidate:
     source: str
     score: float
     notes: str
+    intelligence: float | None = None
+    coding: float | None = None
+    agentic: float | None = None
+    intelligence_source: str = ""
 
 
 def decimal_zero(value: Any) -> bool:
@@ -81,6 +85,13 @@ def as_int(value: Any, default: int = 0) -> int:
         return int(value)
     except (TypeError, ValueError):
         return default
+
+
+def as_float(value: Any) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def has_text_output_from_api(model: dict[str, Any]) -> bool:
@@ -121,10 +132,17 @@ def excluded(model_id: str, name: str) -> bool:
         "content-safety",
         "image",
     ]
-    if any(term in text for term in hard_excludes):
-        return True
-    weak_tiers = ["flash", "fast", "lite", "mini"]
-    return any(re.search(rf"(^|[-_/ ]){term}($|[-_/ ])", text) for term in weak_tiers)
+    return any(term in text for term in hard_excludes)
+
+
+def artificial_analysis_scores(model: dict[str, Any]) -> tuple[float | None, float | None, float | None]:
+    benchmarks = model.get("benchmarks") or {}
+    aa = benchmarks.get("artificial_analysis") or {}
+    return (
+        as_float(aa.get("intelligence_index")),
+        as_float(aa.get("coding_index")),
+        as_float(aa.get("agentic_index")),
+    )
 
 
 def release_score(release_date: str) -> float:
@@ -199,7 +217,16 @@ def size_score(model_id: str, name: str) -> float:
     return score
 
 
-def score_candidate(model_id: str, name: str, context: int, output: int, reasoning: bool, structured: bool, release_date: str) -> tuple[float, str]:
+def score_candidate(
+    model_id: str,
+    name: str,
+    context: int,
+    output: int,
+    reasoning: bool,
+    structured: bool,
+    release_date: str,
+    intelligence: float | None = None,
+) -> tuple[float, str]:
     score = 0.0
     # Context is capped at 500 points so a long-context weak model cannot
     # outrank a strong reasoner on window size alone.
@@ -211,8 +238,18 @@ def score_candidate(model_id: str, name: str, context: int, output: int, reasoni
         score += 80
     score += release_score(release_date)
     score += size_score(model_id, name)
-    notes = f"context={context} output={output} reasoning={reasoning} structured={structured} release={release_date or 'unknown'}"
+    index_note = f" aa_intelligence={intelligence:g}" if intelligence is not None else " aa_intelligence=unavailable"
+    notes = (
+        f"context={context} output={output} reasoning={reasoning} structured={structured} "
+        f"release={release_date or 'unknown'}{index_note}"
+    )
     return score, notes
+
+
+def candidate_rank(candidate: Candidate) -> tuple[bool, float, float]:
+    """Rank by the live intelligence index, using heuristics only as a fallback/tiebreaker."""
+    intelligence = candidate.intelligence if candidate.intelligence is not None else float("-inf")
+    return candidate.intelligence is not None, intelligence, candidate.score
 
 
 def from_openrouter_api(timeout: float = 10.0) -> list[Candidate]:
@@ -239,8 +276,26 @@ def from_openrouter_api(timeout: float = 10.0) -> list[Candidate]:
         reasoning = "reasoning" in supported or "include_reasoning" in supported
         structured = "response_format" in supported or "structured_outputs" in supported
         release_date = normalize_release_date(model.get("created") or model.get("release_date"))
-        score, notes = score_candidate(model_id, name, context, output, reasoning, structured, release_date)
-        candidates.append(Candidate(model_id, name, context, output, reasoning, structured, release_date, "openrouter_api", score, notes))
+        intelligence, coding, agentic = artificial_analysis_scores(model)
+        score, notes = score_candidate(model_id, name, context, output, reasoning, structured, release_date, intelligence)
+        candidates.append(
+            Candidate(
+                model_id,
+                name,
+                context,
+                output,
+                reasoning,
+                structured,
+                release_date,
+                "openrouter_api",
+                score,
+                notes,
+                intelligence,
+                coding,
+                agentic,
+                "Artificial Analysis via OpenRouter" if intelligence is not None else "",
+            )
+        )
     return candidates
 
 
@@ -279,7 +334,7 @@ def select_candidates(
 
     def usable(candidates: list[Candidate]) -> list[Candidate]:
         kept = [c for c in candidates if not excluded_by_vendor(c.model_id, exclude_families)]
-        return sorted(kept, key=lambda c: c.score, reverse=True)
+        return sorted(kept, key=candidate_rank, reverse=True)
 
     errors: list[str] = []
     if not offline:
@@ -325,7 +380,23 @@ def find_model(model_id: str, cache_path: Path | None = None, timeout: float = 1
             reasoning = "reasoning" in supported or "include_reasoning" in supported
             structured = "response_format" in supported or "structured_outputs" in supported
             release_date = normalize_release_date(model.get("created") or model.get("release_date"))
-            return Candidate(model_id, name, context, output, reasoning, structured, release_date, "openrouter_api", 0.0, "pinned lookup")
+            intelligence, coding, agentic = artificial_analysis_scores(model)
+            return Candidate(
+                model_id,
+                name,
+                context,
+                output,
+                reasoning,
+                structured,
+                release_date,
+                "openrouter_api",
+                0.0,
+                "pinned lookup",
+                intelligence,
+                coding,
+                agentic,
+                "Artificial Analysis via OpenRouter" if intelligence is not None else "",
+            )
     except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError):
         pass
     cache_path = cache_path or Path.home() / ".cache/opencode/models.json"
@@ -406,11 +477,16 @@ def print_candidate(candidate: Candidate, output_format: str) -> None:
     elif output_format == "shell":
         print(f"OPENROUTER_MODEL={shlex.quote(candidate.model_id)}")
         print(f"OPENROUTER_MODEL_NAME={shlex.quote(candidate.name)}")
+        print(f"OPENROUTER_MODEL_INTELLIGENCE={shlex.quote('' if candidate.intelligence is None else str(candidate.intelligence))}")
         print(f"OPENROUTER_MODEL_REASON={shlex.quote(candidate.notes + ' source=' + candidate.source + ' score=' + str(round(candidate.score, 1)))}")
     elif output_format == "json":
         print(json.dumps(candidate.__dict__, indent=2, sort_keys=True))
     else:
-        print(f"{candidate.model_id}\t{candidate.name}\t{candidate.notes}\t{candidate.source}\tscore={candidate.score:.1f}")
+        intelligence = "unavailable" if candidate.intelligence is None else f"{candidate.intelligence:g}"
+        print(
+            f"{candidate.model_id}\t{candidate.name}\t{candidate.notes}\t{candidate.source}"
+            f"\taa_intelligence={intelligence}\theuristic_score={candidate.score:.1f}"
+        )
 
 
 def main(argv: Iterable[str] | None = None) -> int:

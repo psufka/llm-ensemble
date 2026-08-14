@@ -23,6 +23,7 @@ from typing import Any, Callable
 SCRIPT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPT_DIR))
 
+import model_intelligence
 import openrouter_query
 import select_openrouter_free_model
 
@@ -84,6 +85,16 @@ class LegResult:
     attempts: list[dict[str, Any]] = field(default_factory=list)
     requires_user_action: bool = False
     user_action: str = ""
+    intelligence_score: float | None = None
+    intelligence_coding_score: float | None = None
+    intelligence_agentic_score: float | None = None
+    intelligence_source: str = ""
+    intelligence_source_url: str = ""
+    intelligence_retrieved_at: str = ""
+    intelligence_matched_model: str = ""
+    intelligence_estimated: bool = False
+    intelligence_note: str = ""
+    model_intelligence: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
 def read_text(path: Path) -> str:
@@ -114,6 +125,99 @@ def display_model(family: str, model: str) -> str:
     return model
 
 
+def format_intelligence_value(value: float, source: str) -> str:
+    if "OpenRouter" in source:
+        return f"{value:.1f}"
+    return f"{value:g}"
+
+
+def intelligence_display(score: model_intelligence.IntelligenceScore | None) -> str:
+    if score is None:
+        return "AA Intelligence score unavailable"
+    suffix = " (estimated configuration match)" if score.estimated else ""
+    return f"AA Intelligence {format_intelligence_value(score.intelligence, score.source)}{suffix}"
+
+
+def intelligence_fields(score: model_intelligence.IntelligenceScore | None) -> dict[str, Any]:
+    if score is None:
+        return {
+            "intelligence_score": None,
+            "intelligence_coding_score": None,
+            "intelligence_agentic_score": None,
+            "intelligence_display": intelligence_display(None),
+            "intelligence_source": "",
+            "intelligence_source_url": "",
+            "intelligence_retrieved_at": "",
+            "intelligence_matched_model": "",
+            "intelligence_estimated": False,
+            "intelligence_note": "",
+        }
+    return {
+        "intelligence_score": score.intelligence,
+        "intelligence_coding_score": score.coding,
+        "intelligence_agentic_score": score.agentic,
+        "intelligence_source": score.source,
+        "intelligence_source_url": score.source_url,
+        "intelligence_retrieved_at": score.retrieved_at,
+        "intelligence_matched_model": score.matched_model,
+        "intelligence_estimated": score.estimated,
+        "intelligence_note": score.note,
+        "intelligence_display": intelligence_display(score),
+    }
+
+
+def candidate_intelligence(candidate: Any) -> model_intelligence.IntelligenceScore | None:
+    value = getattr(candidate, "intelligence", None)
+    if value is None:
+        return None
+    return model_intelligence.IntelligenceScore(
+        intelligence=float(value),
+        coding=getattr(candidate, "coding", None),
+        agentic=getattr(candidate, "agentic", None),
+        source=getattr(candidate, "intelligence_source", "") or "Artificial Analysis via OpenRouter",
+        source_url=model_intelligence.OPENROUTER_MODELS_DOCS_URL,
+        retrieved_at=model_intelligence.utc_now(),
+        matched_model=getattr(candidate, "model_id", ""),
+    )
+
+
+def apply_intelligence(result: LegResult, score: model_intelligence.IntelligenceScore | None, model: str | None = None) -> LegResult:
+    fields = intelligence_fields(score)
+    result.intelligence_score = fields.get("intelligence_score")
+    result.intelligence_coding_score = fields.get("intelligence_coding_score")
+    result.intelligence_agentic_score = fields.get("intelligence_agentic_score")
+    result.intelligence_source = fields.get("intelligence_source", "")
+    result.intelligence_source_url = fields.get("intelligence_source_url", "")
+    result.intelligence_retrieved_at = fields.get("intelligence_retrieved_at", "")
+    result.intelligence_matched_model = fields.get("intelligence_matched_model", "")
+    result.intelligence_estimated = bool(fields.get("intelligence_estimated", False))
+    result.intelligence_note = fields.get("intelligence_note", "")
+    model_key = model if model is not None else result.model
+    if model_key:
+        result.model_intelligence[model_key] = fields
+    return result
+
+
+def leg_intelligence_fields(result: LegResult) -> dict[str, Any]:
+    return {
+        "intelligence_score": result.intelligence_score,
+        "intelligence_coding_score": result.intelligence_coding_score,
+        "intelligence_agentic_score": result.intelligence_agentic_score,
+        "intelligence_source": result.intelligence_source,
+        "intelligence_source_url": result.intelligence_source_url,
+        "intelligence_retrieved_at": result.intelligence_retrieved_at,
+        "intelligence_matched_model": result.intelligence_matched_model,
+        "intelligence_estimated": result.intelligence_estimated,
+        "intelligence_note": result.intelligence_note,
+        "intelligence_display": (
+            f"AA Intelligence {format_intelligence_value(result.intelligence_score, result.intelligence_source)}"
+            + (" (estimated configuration match)" if result.intelligence_estimated else "")
+            if result.intelligence_score is not None
+            else "AA Intelligence score unavailable"
+        ),
+    }
+
+
 def emit_model_event(event: str, leg: str, family: str, model: str, detail: str = "", extra: dict[str, Any] | None = None) -> None:
     payload = {
         "event": event,
@@ -142,15 +246,20 @@ def skip_result(leg: str, family: str, reason: str, requires_user_action: bool =
     )
 
 
-def resolve_only_result(leg: str, family: str, model: str) -> LegResult:
-    return LegResult(
+def resolve_only_result(
+    leg: str,
+    family: str,
+    model: str,
+    score: model_intelligence.IntelligenceScore | None = None,
+) -> LegResult:
+    return apply_intelligence(LegResult(
         leg=leg,
         family=family,
         model=model,
         skipped=True,
         skip_reason="resolve-only mode",
         exit_code="resolve-only",
-    )
+    ), score)
 
 
 def public_command(args: list[str], prompt_arg: str | None = None) -> list[str]:
@@ -218,7 +327,14 @@ def run_leg_with_retry(run_once: Callable[[], LegResult]) -> LegResult:
     first = run_once()
     if not should_retry_leg(first):
         return first
-    emit_model_event("retry", first.leg, first.family, first.model, f"cli retry after: {first.failure_reason}"[:200])
+    emit_model_event(
+        "retry",
+        first.leg,
+        first.family,
+        first.model,
+        f"cli retry after: {first.failure_reason}"[:200],
+        extra=leg_intelligence_fields(first),
+    )
     second = run_once()
     second.attempts = [
         {
@@ -384,8 +500,11 @@ def gemini_quality_score(model: str) -> int:
     return 0
 
 
-def choose_gemini_model(lines: list[str]) -> str:
-    candidates: list[tuple[int, tuple[int, ...], int, str]] = []
+def choose_gemini_model(
+    lines: list[str],
+    catalog: model_intelligence.IntelligenceCatalog | None = None,
+) -> str:
+    candidates: list[tuple[bool, float, int, tuple[int, ...], int, str]] = []
     for raw_line in lines:
         model = raw_line.strip()
         lowered = model.lower()
@@ -393,10 +512,20 @@ def choose_gemini_model(lines: list[str]) -> str:
             continue
         # Score on the full line (display column carries tier info) but keep
         # only the model-id column as the selectable value.
-        candidates.append((gemini_quality_score(model), parse_gemini_version(model), parse_model_tier(model), agy_model_id(raw_line)))
+        score = catalog.lookup(model, "gemini") if catalog is not None else None
+        candidates.append(
+            (
+                score is not None,
+                score.intelligence if score is not None else float("-inf"),
+                gemini_quality_score(model),
+                parse_gemini_version(model),
+                parse_model_tier(model),
+                agy_model_id(raw_line),
+            )
+        )
     if not candidates:
         return ""
-    return sorted(candidates, reverse=True)[0][3]
+    return sorted(candidates, reverse=True)[0][5]
 
 
 def parse_claude_version(model: str) -> tuple[int, ...]:
@@ -424,8 +553,11 @@ def claude_quality_score(model: str) -> int:
     return 0
 
 
-def choose_claude_model(lines: list[str]) -> str:
-    candidates: list[tuple[int, tuple[int, ...], int, str]] = []
+def choose_claude_model(
+    lines: list[str],
+    catalog: model_intelligence.IntelligenceCatalog | None = None,
+) -> str:
+    candidates: list[tuple[bool, float, int, tuple[int, ...], int, str]] = []
     for raw_line in lines:
         model = raw_line.strip()
         lowered = model.lower()
@@ -434,10 +566,20 @@ def choose_claude_model(lines: list[str]) -> str:
         thinking = 1 if "thinking" in lowered else 0
         # Score on the full line ("Thinking" may only appear in the display
         # column) but keep only the model-id column as the selectable value.
-        candidates.append((claude_quality_score(model), parse_claude_version(model), thinking, agy_model_id(raw_line)))
+        score = catalog.lookup(model, "claude") if catalog is not None else None
+        candidates.append(
+            (
+                score is not None,
+                score.intelligence if score is not None else float("-inf"),
+                claude_quality_score(model),
+                parse_claude_version(model),
+                thinking,
+                agy_model_id(raw_line),
+            )
+        )
     if not candidates:
         return ""
-    return sorted(candidates, reverse=True)[0][3]
+    return sorted(candidates, reverse=True)[0][5]
 
 
 def list_agy_models(output_dir: Path, timeout: float = 30) -> tuple[list[str], str, bool]:
@@ -484,19 +626,34 @@ def make_agy_models_cache(output_dir: Path) -> Callable[[], tuple[list[str], str
     return get
 
 
-def select_agy_model(lines: list[str], display_name: str, chooser: Any) -> tuple[str, str]:
-    model = chooser(lines)
+def make_intelligence_catalog() -> model_intelligence.IntelligenceCatalog:
+    return model_intelligence.IntelligenceCatalog()
+
+
+def select_agy_model(
+    lines: list[str],
+    display_name: str,
+    chooser: Any,
+    catalog: model_intelligence.IntelligenceCatalog | None = None,
+) -> tuple[str, str]:
+    model = chooser(lines, catalog)
     if not model:
         return "", f"no {display_name} model found in agy models output"
     return model, ""
 
 
-def select_gemini_model(lines: list[str]) -> tuple[str, str]:
-    return select_agy_model(lines, "Gemini", choose_gemini_model)
+def select_gemini_model(
+    lines: list[str],
+    catalog: model_intelligence.IntelligenceCatalog | None = None,
+) -> tuple[str, str]:
+    return select_agy_model(lines, "Gemini", choose_gemini_model, catalog)
 
 
-def select_claude_model(lines: list[str]) -> tuple[str, str]:
-    return select_agy_model(lines, "Claude", choose_claude_model)
+def select_claude_model(
+    lines: list[str],
+    catalog: model_intelligence.IntelligenceCatalog | None = None,
+) -> tuple[str, str]:
+    return select_agy_model(lines, "Claude", choose_claude_model, catalog)
 
 
 def parse_codex_config_value(config_path: Path, key: str) -> str:
@@ -538,19 +695,49 @@ def select_codex_effort(requested_effort: str) -> str:
     return "xhigh"
 
 
-def choose_grok_model(lines: list[str]) -> str:
+def choose_grok_model(
+    lines: list[str],
+    catalog: model_intelligence.IntelligenceCatalog | None = None,
+) -> str:
+    default_model = ""
+    available: list[str] = []
     for raw_line in lines:
         match = re.match(r"\s*Default model:\s*(\S+)\s*$", raw_line, re.I)
         if match:
-            return match.group(1)
+            default_model = match.group(1)
+            if default_model not in available:
+                available.append(default_model)
     for raw_line in lines:
-        match = re.match(r"\s*\*\s*(\S+)\s*\(default\)\s*$", raw_line, re.I)
+        match = re.match(r"\s*[-*]\s*(\S+)(?:\s*\(default\))?\s*$", raw_line, re.I)
         if match:
-            return match.group(1)
-    return ""
+            model = match.group(1)
+            if "(default)" in raw_line.lower() and not default_model:
+                default_model = model
+            if model not in available:
+                available.append(model)
+    if catalog is not None and available:
+        ranked: list[tuple[bool, float, tuple[int, ...], bool, str]] = []
+        for model in available:
+            score = catalog.lookup(model, "grok")
+            ranked.append(
+                (
+                    score is not None,
+                    score.intelligence if score is not None else float("-inf"),
+                    parse_version_parts(".".join(re.findall(r"\d+", model))) if re.search(r"\d", model) else (),
+                    model == default_model,
+                    model,
+                )
+            )
+        return sorted(ranked, reverse=True)[0][4]
+    return default_model
 
 
-def select_grok_model(output_dir: Path, requested_model: str, timeout: float = 30) -> tuple[str, str]:
+def select_grok_model(
+    output_dir: Path,
+    requested_model: str,
+    timeout: float = 30,
+    catalog: model_intelligence.IntelligenceCatalog | None = None,
+) -> tuple[str, str]:
     if requested_model.strip():
         return requested_model.strip(), ""
     env_model = os.environ.get("ENSEMBLE_GROK_MODEL", "").strip()
@@ -576,9 +763,9 @@ def select_grok_model(output_dir: Path, requested_model: str, timeout: float = 3
         return "", f"grok models failed: {exc}"
     if completed.returncode != 0:
         return "", f"grok models exit code {completed.returncode}"
-    model = choose_grok_model(read_text(stdout_path).splitlines())
+    model = choose_grok_model(read_text(stdout_path).splitlines(), catalog)
     if not model:
-        return "", "no default Grok model found in grok models output"
+        return "", "no Grok model found in grok models output"
     return model, ""
 
 
@@ -806,8 +993,16 @@ def run_openrouter(output_dir: Path, prompt: str, args: argparse.Namespace, excl
             result.duration_seconds = round(time.monotonic() - start, 3)
             return finalize_process_result(result, stdout_path, stderr_path)
         top = candidates[0]
-        emit_model_event("selected", "openrouter", "openrouter", top.model_id, "resolve-only")
-        resolved = resolve_only_result("openrouter", "openrouter", top.model_id)
+        score = candidate_intelligence(top)
+        emit_model_event(
+            "selected",
+            "openrouter",
+            "openrouter",
+            top.model_id,
+            "resolve-only",
+            extra=intelligence_fields(score),
+        )
+        resolved = resolve_only_result("openrouter", "openrouter", top.model_id, score)
         resolved.attempts = result.attempts
         resolved.stdout_path = str(stdout_path)
         resolved.stderr_path = str(stderr_path)
@@ -820,12 +1015,15 @@ def run_openrouter(output_dir: Path, prompt: str, args: argparse.Namespace, excl
     for attempt_number, candidate in enumerate(candidates, start=1):
         result.model = candidate.model_id
         result.models_prompted.append(candidate.model_id)
+        score = candidate_intelligence(candidate)
+        apply_intelligence(result, score, candidate.model_id)
         emit_model_event(
             "selected" if attempt_number == 1 else "retry",
             "openrouter",
             "openrouter",
             candidate.model_id,
             f"user-prompt attempt {attempt_number}",
+            extra=intelligence_fields(score),
         )
         attempt_started = time.monotonic()
         max_tokens = args.openrouter_max_tokens
@@ -854,6 +1052,7 @@ def run_openrouter(output_dir: Path, prompt: str, args: argparse.Namespace, excl
                     "finish_reason": finish_reason,
                     "truncated": truncated,
                     "max_tokens": max_tokens,
+                    **intelligence_fields(score),
                     "duration_seconds": round(time.monotonic() - attempt_started, 3),
                 }
             )
@@ -871,6 +1070,7 @@ def run_openrouter(output_dir: Path, prompt: str, args: argparse.Namespace, excl
                     "ok": False,
                     "retryable": exc.retryable,
                     "error": error_text[:1000],
+                    **intelligence_fields(score),
                     "duration_seconds": round(time.monotonic() - attempt_started, 3),
                 }
             )
@@ -905,9 +1105,22 @@ def run_openrouter_pinned(output_dir: Path, prompt: str, args: argparse.Namespac
         write_text(stderr_path, result.skip_reason + "\n")
         return finalize_process_result(result, stdout_path, stderr_path)
 
+    try:
+        candidate = select_openrouter_free_model.find_model(model_id)
+    except Exception:  # noqa: BLE001
+        candidate = None
+    score = candidate_intelligence(candidate)
+
     if getattr(args, "resolve_only", False):
-        emit_model_event("selected", "openrouter-pinned", "openrouter-pinned", model_id, "resolve-only (pinned)")
-        resolved = resolve_only_result("openrouter-pinned", "openrouter-pinned", model_id)
+        emit_model_event(
+            "selected",
+            "openrouter-pinned",
+            "openrouter-pinned",
+            model_id,
+            "resolve-only (pinned)",
+            extra=intelligence_fields(score),
+        )
+        resolved = resolve_only_result("openrouter-pinned", "openrouter-pinned", model_id, score)
         resolved.stdout_path = str(stdout_path)
         resolved.stderr_path = str(stderr_path)
         resolved.duration_seconds = round(time.monotonic() - start, 3)
@@ -920,10 +1133,6 @@ def run_openrouter_pinned(output_dir: Path, prompt: str, args: argparse.Namespac
     # (a reasoning model with a small completion cap can otherwise burn the
     # whole budget before emitting visible content).
     max_tokens = args.openrouter_max_tokens
-    try:
-        candidate = select_openrouter_free_model.find_model(model_id)
-    except Exception:  # noqa: BLE001
-        candidate = None
     candidate_output = getattr(candidate, "output", 0) or 0
     if candidate_output > 0:
         max_tokens = min(max_tokens, candidate_output)
@@ -940,12 +1149,14 @@ def run_openrouter_pinned(output_dir: Path, prompt: str, args: argparse.Namespac
     for attempt_number in (1, 2):
         result.model = model_id
         result.models_prompted.append(model_id)
+        apply_intelligence(result, score, model_id)
         emit_model_event(
             "selected" if attempt_number == 1 else "retry",
             "openrouter-pinned",
             "openrouter-pinned",
             model_id,
             f"user-prompt attempt {attempt_number} (pinned)",
+            extra=intelligence_fields(score),
         )
         attempt_started = time.monotonic()
         try:
@@ -970,6 +1181,7 @@ def run_openrouter_pinned(output_dir: Path, prompt: str, args: argparse.Namespac
                     "finish_reason": finish_reason,
                     "truncated": truncated,
                     "max_tokens": max_tokens,
+                    **intelligence_fields(score),
                     "duration_seconds": round(time.monotonic() - attempt_started, 3),
                 }
             )
@@ -987,6 +1199,7 @@ def run_openrouter_pinned(output_dir: Path, prompt: str, args: argparse.Namespac
                     "ok": False,
                     "retryable": exc.retryable,
                     "error": error_text[:1000],
+                    **intelligence_fields(score),
                     "duration_seconds": round(time.monotonic() - attempt_started, 3),
                 }
             )
@@ -1000,7 +1213,13 @@ def run_openrouter_pinned(output_dir: Path, prompt: str, args: argparse.Namespac
     return finalize_process_result(result, stdout_path, stderr_path)
 
 
-def resolve_and_run_claude(args: argparse.Namespace, output_dir: Path, external_prompt: str, get_agy_models: Callable[[], tuple[list[str], str, bool]]) -> LegResult:
+def resolve_and_run_claude(
+    args: argparse.Namespace,
+    output_dir: Path,
+    external_prompt: str,
+    get_agy_models: Callable[[], tuple[list[str], str, bool]],
+    catalog: model_intelligence.IntelligenceCatalog | None = None,
+) -> LegResult:
     lines, error, requires_action = get_agy_models()
     if error:
         emit_model_event("skipped", "claude", "claude", "", error)
@@ -1011,17 +1230,29 @@ def resolve_and_run_claude(args: argparse.Namespace, output_dir: Path, external_
             requires_user_action=requires_action,
             user_action=agy_recredential_action() if requires_action else "",
         )
-    model, model_error = select_claude_model(lines)
+    model, model_error = select_claude_model(lines, catalog)
     if model_error:
         emit_model_event("skipped", "claude", "claude", "", model_error)
         return skip_result("claude", "claude", model_error)
-    emit_model_event("selected", "claude", "claude", model)
+    score = catalog.lookup(model, "claude") if catalog is not None else None
+    emit_model_event("selected", "claude", "claude", model, extra=intelligence_fields(score))
     if getattr(args, "resolve_only", False):
-        return resolve_only_result("claude", "claude", model)
-    return run_leg_with_retry(lambda: run_claude(output_dir, external_prompt, model, args.timeout, args.agy_max_prompt_bytes))
+        return resolve_only_result("claude", "claude", model, score)
+    return run_leg_with_retry(
+        lambda: apply_intelligence(
+            run_claude(output_dir, external_prompt, model, args.timeout, args.agy_max_prompt_bytes),
+            score,
+        )
+    )
 
 
-def resolve_and_run_gemini(args: argparse.Namespace, output_dir: Path, external_prompt: str, get_agy_models: Callable[[], tuple[list[str], str, bool]]) -> LegResult:
+def resolve_and_run_gemini(
+    args: argparse.Namespace,
+    output_dir: Path,
+    external_prompt: str,
+    get_agy_models: Callable[[], tuple[list[str], str, bool]],
+    catalog: model_intelligence.IntelligenceCatalog | None = None,
+) -> LegResult:
     lines, error, requires_action = get_agy_models()
     if error:
         emit_model_event("skipped", "gemini", "gemini", "", error)
@@ -1032,37 +1263,69 @@ def resolve_and_run_gemini(args: argparse.Namespace, output_dir: Path, external_
             requires_user_action=requires_action,
             user_action=agy_recredential_action() if requires_action else "",
         )
-    model, model_error = select_gemini_model(lines)
+    model, model_error = select_gemini_model(lines, catalog)
     if model_error:
         emit_model_event("skipped", "gemini", "gemini", "", model_error)
         return skip_result("gemini", "gemini", model_error)
-    emit_model_event("selected", "gemini", "gemini", model)
+    score = catalog.lookup(model, "gemini") if catalog is not None else None
+    emit_model_event("selected", "gemini", "gemini", model, extra=intelligence_fields(score))
     if getattr(args, "resolve_only", False):
-        return resolve_only_result("gemini", "gemini", model)
-    return run_leg_with_retry(lambda: run_gemini(output_dir, external_prompt, model, args.timeout, args.agy_max_prompt_bytes))
+        return resolve_only_result("gemini", "gemini", model, score)
+    return run_leg_with_retry(
+        lambda: apply_intelligence(
+            run_gemini(output_dir, external_prompt, model, args.timeout, args.agy_max_prompt_bytes),
+            score,
+        )
+    )
 
 
-def resolve_and_run_codex(args: argparse.Namespace, output_dir: Path, external_prompt: str) -> LegResult:
+def resolve_and_run_codex(
+    args: argparse.Namespace,
+    output_dir: Path,
+    external_prompt: str,
+    catalog: model_intelligence.IntelligenceCatalog | None = None,
+) -> LegResult:
     model, error = select_codex_model(args.codex_model)
     if error:
         emit_model_event("skipped", "codex", "codex", "", error)
         return skip_result("codex", "codex", error)
     effort = select_codex_effort(getattr(args, "codex_effort", ""))
-    emit_model_event("selected", "codex", "codex", model, f"reasoning effort {effort}")
+    score = catalog.lookup(model, "codex") if catalog is not None else None
+    emit_model_event(
+        "selected",
+        "codex",
+        "codex",
+        model,
+        f"reasoning effort {effort}",
+        extra=intelligence_fields(score),
+    )
     if getattr(args, "resolve_only", False):
-        return resolve_only_result("codex", "codex", model)
-    return run_leg_with_retry(lambda: run_codex(output_dir, external_prompt, model, effort, args.timeout))
+        return resolve_only_result("codex", "codex", model, score)
+    return run_leg_with_retry(
+        lambda: apply_intelligence(run_codex(output_dir, external_prompt, model, effort, args.timeout), score)
+    )
 
 
-def resolve_and_run_grok(args: argparse.Namespace, output_dir: Path, external_prompt_file: Path) -> LegResult:
-    model, error = select_grok_model(output_dir, args.grok_model)
+def resolve_and_run_grok(
+    args: argparse.Namespace,
+    output_dir: Path,
+    external_prompt_file: Path,
+    catalog: model_intelligence.IntelligenceCatalog | None = None,
+) -> LegResult:
+    model, error = select_grok_model(output_dir, args.grok_model, catalog=catalog)
     if error:
         emit_model_event("skipped", "grok", "grok", "", error)
         return skip_result("grok", "grok", error)
-    emit_model_event("selected", "grok", "grok", model)
+    score = catalog.lookup(model, "grok") if catalog is not None else None
+    emit_model_event("selected", "grok", "grok", model, extra=intelligence_fields(score))
     if getattr(args, "resolve_only", False):
-        return resolve_only_result("grok", "grok", model)
-    return run_leg_with_retry(lambda: run_grok(output_dir, external_prompt_file, model, args.timeout, args.keep_workdirs))
+        return resolve_only_result("grok", "grok", model, score)
+    return run_leg_with_retry(
+        lambda: apply_intelligence(
+            run_grok(output_dir, external_prompt_file, model, args.timeout, args.keep_workdirs),
+            score,
+        )
+    )
 
 
 def write_blind_answers(legs: list[LegResult], output_dir: Path) -> str:
@@ -1087,6 +1350,7 @@ def write_blind_answers(legs: list[LegResult], output_dir: Path) -> str:
             "model": leg.model,
             "display_model": display_model(leg.family, leg.model),
             "truncated": leg.truncated,
+            **leg_intelligence_fields(leg),
         }
     write_text(answers_dir / "mapping.json", json.dumps(mapping, indent=2, sort_keys=True) + "\n")
     return str(answers_dir)
@@ -1097,6 +1361,7 @@ def prompted_model_rows(leg: LegResult) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for index, model in enumerate(leg.models_prompted):
         attempt_ok = query_attempts[index].get("ok") if index < len(query_attempts) else leg.ok
+        score_fields = leg.model_intelligence.get(model, leg_intelligence_fields(leg))
         rows.append(
             {
                 "leg": leg.leg,
@@ -1104,12 +1369,21 @@ def prompted_model_rows(leg: LegResult) -> list[dict[str, Any]]:
                 "model": model,
                 "display_model": display_model(leg.family, model),
                 "attempt_ok": bool(attempt_ok),
+                **score_fields,
             }
         )
     return rows
 
 
-def build_manifest(args: argparse.Namespace, output_dir: Path, prompt_file: Path, external_prompt_file: Path, legs: list[LegResult]) -> dict[str, Any]:
+def build_manifest(
+    args: argparse.Namespace,
+    output_dir: Path,
+    prompt_file: Path,
+    external_prompt_file: Path,
+    legs: list[LegResult],
+    orchestrator_score: model_intelligence.IntelligenceScore | None = None,
+    intelligence_metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     valid_external_count = sum(1 for leg in legs if leg.ok)
     requires_user_action = any(leg.requires_user_action for leg in legs)
     if getattr(args, "resolve_only", False):
@@ -1134,6 +1408,10 @@ def build_manifest(args: argparse.Namespace, output_dir: Path, prompt_file: Path
         "external_prompt_file": str(external_prompt_file),
         "output_dir": str(output_dir),
         "timeout_seconds": args.timeout,
+        "intelligence_index": intelligence_metadata or {
+            "metric": "Artificial Analysis Intelligence Index",
+            "errors": [],
+        },
         "legs": [asdict(leg) for leg in legs],
         "models_prompted": [
             {
@@ -1142,6 +1420,7 @@ def build_manifest(args: argparse.Namespace, output_dir: Path, prompt_file: Path
                 "model": args.orchestrator_model,
                 "display_model": display_model(args.orchestrator, args.orchestrator_model),
                 "attempt_ok": True,
+                **intelligence_fields(orchestrator_score),
             }
         ]
         + [
@@ -1215,7 +1494,16 @@ def main() -> int:
     write_text(prompt_file, prompt_text)
     external_prompt = f"{EXTERNAL_SYSTEM_INSTRUCTION}\n\nUSER PROMPT:\n{prompt_text}"
     write_text(external_prompt_file, external_prompt)
-    emit_model_event("selected", "orchestrator", args.orchestrator, args.orchestrator_model, "current runtime")
+    intelligence_catalog = make_intelligence_catalog()
+    orchestrator_score = intelligence_catalog.lookup(args.orchestrator_model, args.orchestrator)
+    emit_model_event(
+        "selected",
+        "orchestrator",
+        args.orchestrator,
+        args.orchestrator_model,
+        "current runtime",
+        extra=intelligence_fields(orchestrator_score),
+    )
 
     skip_requested = set(getattr(args, "skip_leg", None) or [])
     only_requested = set(getattr(args, "only_leg", None) or [])
@@ -1235,7 +1523,9 @@ def main() -> int:
         elif not agy_available:
             legs.append(skip_result("claude", "claude", "agy CLI not found"))
         else:
-            futures[executor.submit(resolve_and_run_claude, args, output_dir, external_prompt, get_agy_models)] = "claude"
+            futures[
+                executor.submit(resolve_and_run_claude, args, output_dir, external_prompt, get_agy_models, intelligence_catalog)
+            ] = "claude"
 
         if args.orchestrator == "codex":
             legs.append(skip_result("codex", "codex", "same family as orchestrator"))
@@ -1244,7 +1534,7 @@ def main() -> int:
         elif not command_exists("codex"):
             legs.append(skip_result("codex", "codex", "codex CLI not found"))
         else:
-            futures[executor.submit(resolve_and_run_codex, args, output_dir, external_prompt)] = "codex"
+            futures[executor.submit(resolve_and_run_codex, args, output_dir, external_prompt, intelligence_catalog)] = "codex"
 
         if args.orchestrator == "gemini":
             legs.append(skip_result("gemini", "gemini", "same family as orchestrator"))
@@ -1253,7 +1543,9 @@ def main() -> int:
         elif not agy_available:
             legs.append(skip_result("gemini", "gemini", "agy CLI not found"))
         else:
-            futures[executor.submit(resolve_and_run_gemini, args, output_dir, external_prompt, get_agy_models)] = "gemini"
+            futures[
+                executor.submit(resolve_and_run_gemini, args, output_dir, external_prompt, get_agy_models, intelligence_catalog)
+            ] = "gemini"
 
         if args.orchestrator == "grok":
             legs.append(skip_result("grok", "grok", "same family as orchestrator"))
@@ -1262,7 +1554,9 @@ def main() -> int:
         elif not command_exists("grok"):
             legs.append(skip_result("grok", "grok", "grok CLI not found"))
         else:
-            futures[executor.submit(resolve_and_run_grok, args, output_dir, external_prompt_file)] = "grok"
+            futures[
+                executor.submit(resolve_and_run_grok, args, output_dir, external_prompt_file, intelligence_catalog)
+            ] = "grok"
 
         pinned_model = getattr(args, "openrouter_model", "") or ""
         if pinned_model:
@@ -1309,13 +1603,25 @@ def main() -> int:
                     leg_result.family,
                     leg_result.model,
                     state,
-                    extra={"ok": leg_result.ok, "duration_seconds": leg_result.duration_seconds},
+                    extra={
+                        "ok": leg_result.ok,
+                        "duration_seconds": leg_result.duration_seconds,
+                        **leg_intelligence_fields(leg_result),
+                    },
                 )
 
     order = {"claude": 0, "codex": 1, "gemini": 2, "grok": 3, "openrouter": 4, "openrouter-pinned": 5}
     legs.sort(key=lambda leg: order.get(leg.leg, 99))
     blind_answers_dir = "" if getattr(args, "resolve_only", False) else write_blind_answers(legs, output_dir)
-    manifest = build_manifest(args, output_dir, prompt_file, external_prompt_file, legs)
+    manifest = build_manifest(
+        args,
+        output_dir,
+        prompt_file,
+        external_prompt_file,
+        legs,
+        orchestrator_score=orchestrator_score,
+        intelligence_metadata=intelligence_catalog.metadata(),
+    )
     manifest["blind_answers_dir"] = blind_answers_dir
     status_path = output_dir / "status.json"
     write_text(status_path, json.dumps(manifest, indent=2, sort_keys=True) + "\n")
@@ -1325,7 +1631,10 @@ def main() -> int:
     print(f"MODE={manifest['mode']}")
     if blind_answers_dir:
         print(f"BLIND_ANSWERS_DIR={blind_answers_dir}")
-    print(f"orchestrator\tok\t{display_model(args.orchestrator, args.orchestrator_model)}")
+    print(
+        f"orchestrator\tok\t{display_model(args.orchestrator, args.orchestrator_model)}"
+        f" · {intelligence_display(orchestrator_score)}"
+    )
     if manifest["requires_user_action"]:
         print("USER_ACTION_REQUIRED=1")
         for action in manifest["user_actions"]:
@@ -1340,6 +1649,8 @@ def main() -> int:
         else:
             state = "failed"
         detail = display_model(leg.family, leg.model) or leg.failure_reason or leg.skip_reason
+        if leg.model:
+            detail += f" · {leg_intelligence_fields(leg)['intelligence_display']}"
         print(f"{leg.leg}\t{state}\t{detail}")
     return 0
 

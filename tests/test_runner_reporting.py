@@ -17,6 +17,15 @@ import run_ensemble
 import select_openrouter_free_model
 
 
+class EmptyIntelligenceCatalog:
+    def lookup(self, model: str, family: str = "") -> None:
+        del model, family
+        return None
+
+    def metadata(self) -> dict[str, object]:
+        return {"metric": "Artificial Analysis Intelligence Index", "errors": []}
+
+
 class RunnerReportingTests(unittest.TestCase):
     def test_main_lists_agy_models_once_for_claude_and_gemini(self) -> None:
         model_lines = ["Claude Opus 4.6 (Thinking)", "Gemini 3.1 Pro (High)"]
@@ -40,6 +49,10 @@ class RunnerReportingTests(unittest.TestCase):
                 only_leg=None,
             )
             with mock.patch.object(run_ensemble, "parse_args", return_value=args), mock.patch.object(
+                run_ensemble,
+                "make_intelligence_catalog",
+                return_value=EmptyIntelligenceCatalog(),
+            ), mock.patch.object(
                 run_ensemble,
                 "command_exists",
                 side_effect=lambda command: command == "agy",
@@ -90,6 +103,38 @@ class RunnerReportingTests(unittest.TestCase):
             [row["display_model"] for row in rows],
             ["vendor/model-a (free)", "vendor/model-b (free)"],
         )
+
+    def test_manifest_reports_intelligence_for_orchestrator_and_leg(self) -> None:
+        score = run_ensemble.model_intelligence.IntelligenceScore(
+            56.0,
+            source="Artificial Analysis via OpenRouter",
+            retrieved_at="2026-08-14T00:00:00+00:00",
+            matched_model="google/gemini-3.7-flash",
+        )
+        leg = run_ensemble.apply_intelligence(
+            run_ensemble.LegResult(
+                leg="gemini",
+                family="gemini",
+                model="gemini-3.7-flash-high",
+                models_prompted=["gemini-3.7-flash-high"],
+                ok=True,
+            ),
+            score,
+        )
+        args = argparse.Namespace(orchestrator="codex", orchestrator_model="gpt-5.6-sol", timeout=600)
+
+        manifest = run_ensemble.build_manifest(
+            args,
+            Path("/tmp/out"),
+            Path("/tmp/prompt.txt"),
+            Path("/tmp/external_prompt.txt"),
+            [leg],
+            orchestrator_score=run_ensemble.model_intelligence.IntelligenceScore(60.9),
+        )
+
+        rows = {row["leg"]: row for row in manifest["models_prompted"]}
+        self.assertEqual(rows["orchestrator"]["intelligence_score"], 60.9)
+        self.assertEqual(rows["gemini"]["intelligence_score"], 56.0)
 
     def test_user_action_does_not_mask_full_ensemble(self) -> None:
         args = argparse.Namespace(orchestrator="codex", orchestrator_model="runtime-model", timeout=600)
@@ -220,6 +265,10 @@ class PinnedDispatchTests(unittest.TestCase):
             leg="openrouter-pinned", family="openrouter-pinned", model="moonshotai/kimi-k3", ok=True
         )
         with mock.patch.object(run_ensemble, "parse_args", return_value=args), mock.patch.object(
+            run_ensemble,
+            "make_intelligence_catalog",
+            return_value=EmptyIntelligenceCatalog(),
+        ), mock.patch.object(
             run_ensemble,
             "command_exists",
             return_value=False,

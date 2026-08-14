@@ -24,11 +24,11 @@ Antigravity/`agy`. The ensemble never spawns the direct Claude CLI.
 | Role | Tool | Model I run |
 |---|---|---|
 | Orchestrator + answer #1 | **Current AI session** | exact runtime model/version when the host exposes it |
-| External leg | **Claude** (Anthropic, via Antigravity) | best available Claude model from `agy models`; skipped when Claude is the orchestrator |
+| External leg | **Claude** (Anthropic, via Antigravity) | highest Artificial Analysis Intelligence score among models exposed by `agy models`; skipped when Claude is the orchestrator |
 | External leg | **Codex** (OpenAI) | exact configured/overridden model, explicitly pinned with `-m`; reasoning effort from the Codex config (overridable via `--codex-effort`/`ENSEMBLE_CODEX_EFFORT`); skipped when Codex is the orchestrator |
-| External leg | **Gemini** (Google, via Antigravity) | best available Gemini model from `agy models`; skipped when Gemini is the orchestrator |
-| External leg | **Grok** (xAI) | current default resolved from `grok models` and explicitly pinned; skipped when Grok is the orchestrator |
-| External leg | **OpenRouter** | `<exact model/version> (free)`, selected dynamically; skipped when OpenRouter is the orchestrator |
+| External leg | **Gemini** (Google, via Antigravity) | highest-indexed model exposed by `agy models`; skipped when Gemini is the orchestrator |
+| External leg | **Grok** (xAI) | highest-indexed model exposed by `grok models` and explicitly pinned; skipped when Grok is the orchestrator |
+| External leg | **OpenRouter** | highest-indexed eligible `<exact model/version> (free)`, selected dynamically; skipped when OpenRouter is the orchestrator |
 | External leg (opt-in) | **OpenRouter pinned** | any model you name with `--openrouter-model` (free or paid) — runs alongside the free leg by default, or replaces it with `--openrouter-swap` |
 
 ## Setup
@@ -65,7 +65,7 @@ export OPENROUTER_API_KEY="..."
 The skill uses OpenRouter directly, not OpenCode, for this leg. OpenCode is useful for manual experiments,
 but direct API calls avoid local skill-trigger leakage and long-prompt hangs.
 
-### 2. Install the skill in Claude or Codex
+### 2. Install the skill in Claude, Codex, or Grok
 
 This repo ships a ready-made [skill](skills/ensemble/SKILL.md) that handles the orchestration. Install the
 whole `skills/ensemble` folder because the OpenRouter helpers live in `skills/ensemble/scripts/`.
@@ -84,12 +84,17 @@ To install it in Codex, copy the same folder to `~/.codex/skills/ensemble` and r
 are not slash commands; invoke it as `$ensemble`, `Use $ensemble to ...`, or natural language like
 `Use the ensemble skill on this question`.
 
+Grok discovers skills in `~/.grok/skills/` and also scans `~/.claude/skills/` by default. For an explicit,
+self-contained Grok install, copy the same folder to `~/.grok/skills/ensemble` and restart Grok.
+
 **Prefer to install it manually?**
 
 ```bash
 git clone https://github.com/psufka/llm-ensemble
-cp -R llm-ensemble/skills/ensemble ~/.claude/skills/ensemble
-cp -R llm-ensemble/skills/ensemble ~/.codex/skills/ensemble
+mkdir -p ~/.claude/skills/ensemble ~/.codex/skills/ensemble ~/.grok/skills/ensemble
+rsync -a llm-ensemble/skills/ensemble/ ~/.claude/skills/ensemble/
+rsync -a llm-ensemble/skills/ensemble/ ~/.codex/skills/ensemble/
+rsync -a llm-ensemble/skills/ensemble/ ~/.grok/skills/ensemble/
 ```
 
 The skill checks installed/authenticated tools (it never installs them), skips missing tools, and skips the
@@ -102,11 +107,11 @@ shell snippet. It announces the current orchestrator model immediately. The runn
 event as soon as each external model resolves, before that model receives the user's prompt:
 
 ```text
-MODEL_EVENT={"event":"selected","leg":"claude","model":"Claude Opus 4.6 (Thinking)","display_model":"Claude Opus 4.6 (Thinking)"}
-MODEL_EVENT={"event":"selected","leg":"openrouter","model":"vendor/model-version:free","display_model":"vendor/model-version (free)"}
+MODEL_EVENT={"event":"selected","leg":"claude","model":"claude-sonnet-4-6","display_model":"claude-sonnet-4-6","intelligence_score":48.4,"intelligence_display":"AA Intelligence 48.4"}
+MODEL_EVENT={"event":"selected","leg":"openrouter","model":"vendor/model-version:free","display_model":"vendor/model-version (free)","intelligence_score":52.1,"intelligence_display":"AA Intelligence 52.1"}
 ```
 
-The orchestrator relays those model/version announcements to the user while the ensemble is still running, but
+The orchestrator relays those model/version and intelligence-score announcements to the user while the ensemble is still running, but
 does not narrate model resolution or say that models are resolving. A leg is announced only after its exact
 model/version is known. If
 OpenRouter retries the user's prompt on a fallback, the runner emits a `retry` event and the orchestrator reports
@@ -146,9 +151,10 @@ retry is reported as a `retry` event.
 
 `status.json` contains the exact orchestrator model, every model that actually received the user's prompt,
 selected models, per-leg exit codes, durations, stdout/stderr paths,
-stdout/stderr sizes, skip reasons, failure reasons, and OpenRouter retry attempts. The orchestrator reads only
+stdout/stderr sizes, skip reasons, failure reasons, OpenRouter retry attempts, and each model's Artificial Analysis
+Intelligence score/source/retrieval time. The orchestrator reads only
 legs with `"ok": true`, then synthesizes. Its final answer ends with a **Models used** roster repeating the exact
-model/version for the orchestrator and every attempted leg. Because the roster already labels the OpenRouter leg,
+model/version and intelligence score for the orchestrator and every attempted leg. Because the roster already labels the OpenRouter leg,
 its model is shown as `<exact model/version> (free)`. The temp directory is kept so the orchestrator can read outputs;
 delete it after synthesis if the prompt or model outputs are sensitive.
 
@@ -206,15 +212,15 @@ These CLIs are coding *agents* — normally they read, write, and run commands. 
   per grok's own `~/.grok/docs/.../14-headless-mode.md`. (`--max-turns 1` was tested and **dropped** — it
   truncated/failed complex answers.)
 - **Claude and Gemini selected fresh each run** - the runner calls `agy models` once per ensemble, reuses that
-  single snapshot for both legs, and chooses the best available Claude model (Opus over Sonnet, Thinking over
-  non-Thinking) plus the best
-  available Gemini quality tier, preferring Pro over Flash regardless of version and preferring High over lower
-  tiers. If `agy` clearly needs recredentialing, the runner returns `needs-user-action` instead of quietly
+  single snapshot for both legs, and ranks every available model by the live Artificial Analysis Intelligence
+  Index. Tier labels such as Opus/Sonnet and Pro/Flash are fallback heuristics only when the index cannot match a
+  candidate. If `agy` clearly needs recredentialing, the runner returns `needs-user-action` instead of quietly
   skipping either leg.
 
-- **Codex and Grok versions are resolved, then pinned** — Codex resolves from `--codex-model`,
+- **Codex and Grok versions are resolved, scored, then pinned** — Codex resolves from `--codex-model`,
   `ENSEMBLE_CODEX_MODEL`, or the active base Codex config and passes the exact ID with `-m`. Grok resolves its
-  default with `grok models` and passes it back with `--model`. If either exact ID cannot be resolved, that leg is
+  available catalog with `grok models`, selects the highest-indexed entry (or its default if none are scored), and
+  passes it back with `--model`. If either exact ID cannot be resolved, that leg is
   skipped instead of being mislabeled as a vague CLI default.
 
 - **Prompt passed safely** — the orchestrator writes one prompt file, and the runner creates a shared
@@ -230,9 +236,11 @@ These CLIs are coding *agents* — normally they read, write, and run commands. 
   causes, and excludes dead legs from the `>=2` external-answer count.
 
 - **OpenRouter free model selection** - `skills/ensemble/scripts/select_openrouter_free_model.py` selects the
-  best currently available free text model. It prefers live OpenRouter `/api/v1/models` metadata, falls back
-  to OpenCode's `~/.cache/opencode/models.json`, filters to zero-cost text models, excludes Flash/Fast/Lite/Mini
-  and wrong-modality/safety-only models, then prefers reasoning-capable, recent, large, high-context models.
+  best currently available free text model. It reads the Artificial Analysis benchmark embedded in OpenRouter's
+  live `/api/v1/models?sort=intelligence-high-to-low` response, filters to zero-cost text models, and ranks by
+  intelligence first. Product-tier words such as Flash/Fast/Lite/Mini are not exclusions: a measured higher score
+  wins. OpenCode's `~/.cache/opencode/models.json` plus reasoning/recency/size/context heuristics are the offline or
+  unindexed fallback.
   With `--smoke` and `OPENROUTER_API_KEY`, it probes the top candidates and prefers the first one that passes
   a tiny exact-output API test, which catches rate-limited or weak-instruction-following free models. During
   the real prompt, `run_ensemble.py` retries alternate free models on retryable upstream/capacity failures.
@@ -254,10 +262,21 @@ Not everything needs four models. Ensemble for:
 
 For quick questions ("what's the capital of France"), one model is fine.
 
-## Tips & gotchas
+## Intelligence index
 
-- **Avoid weak Gemini tiers when possible** — `agy` in particular defaults to Gemini Flash; the runner parses
-  `agy models`, prefers Pro over Flash, and uses lower tiers only when no stronger Gemini option is available.
+The runner uses the [OpenRouter models API](https://openrouter.ai/docs/api/api-reference/models/list-all-models-and-their-properties),
+whose `benchmarks.artificial_analysis` object exposes intelligence, coding, and agentic indices. The primary model
+selector uses the general Artificial Analysis Intelligence Index. OpenRouter's public model catalog needs no API
+key for this lookup. If a local CLI still exposes a model that OpenRouter no longer scores, the runner checks its
+[Artificial Analysis](https://artificialanalysis.ai/) model page; because a local `Thinking` label may not prove
+the exact max-effort benchmark configuration, that fallback is labeled `estimated configuration match`.
+
+An OpenRouter omission is never labeled “not indexed”; after the Artificial Analysis fallback is also checked,
+the runner says only that the score is unavailable. If the current host does not expose its runtime version, the roster says the score is unavailable rather
+than guessing. Every selected/retry event, blind mapping, leg record, and top-level `models_prompted` row carries
+the score and source metadata used for the final roster.
+
+## Tips & gotchas
 - **Models stay current — and tell you twice** — the runner emits each exact model/version during startup,
   records every user-prompt attempt plus attempt-level success in `status.json`, and the final synthesis repeats
   the roster. The already-labeled OpenRouter row uses `<exact model/version> (free)`.

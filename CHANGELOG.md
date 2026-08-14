@@ -2,6 +2,24 @@
 
 Notable changes to `llm-ensemble`.
 
+## 2026-08-14
+
+### Added
+
+- Added live Artificial Analysis Intelligence Index resolution. Active models use OpenRouter's public `benchmarks.artificial_analysis` fields; delisted Claude models fall back to their retained Artificial Analysis pages and are marked as estimated configuration matches when the local runtime only says `Thinking`.
+- Added intelligence score, coding/agentic sub-scores when present, source URL, matched benchmark model, retrieval time, and estimation status to `MODEL_EVENT` output, leg records, blind-answer mappings, and the top-level prompted-model roster.
+- Added Grok installation documentation and explicit `~/.grok/skills/ensemble` support.
+
+### Changed
+
+- Claude, Gemini, and Grok model selection now ranks every locally available candidate by the live intelligence index. Product tier names and version/effort heuristics are fallbacks only, so a higher-scoring Flash or Sonnet model can correctly outrank a Pro or Opus model.
+- Free OpenRouter selection now ranks by the embedded intelligence index first and no longer rejects models merely because their names contain Flash, Fast, Lite, or Mini.
+- The required final roster now includes each exact model's intelligence score, result, and source/retrieval note.
+
+### Fixed
+
+- Replaced the misleading `not indexed` outcome for models omitted from OpenRouter with an Artificial Analysis page fallback and an explicit `score unavailable` result only after lookup fails.
+
 ## 2026-08-09
 
 ### Added

@@ -18,7 +18,30 @@ import run_ensemble
 import select_openrouter_free_model
 
 
+def static_catalog(scores: dict[str, float]) -> mock.Mock:
+    catalog = mock.Mock()
+
+    def lookup(model: str, family: str = "") -> object:
+        del family
+        lowered = model.lower()
+        for marker, value in scores.items():
+            if marker in lowered:
+                return run_ensemble.model_intelligence.IntelligenceScore(value)
+        return None
+
+    catalog.lookup.side_effect = lookup
+    return catalog
+
+
 class ClaudeModelSelectionTests(unittest.TestCase):
+    def test_live_index_can_rank_sonnet_above_opus(self) -> None:
+        lines = [
+            "claude-sonnet-4-6\tClaude Sonnet 4.6 (Thinking)",
+            "claude-opus-4-6-thinking\tClaude Opus 4.6 (Thinking)",
+        ]
+        catalog = static_catalog({"sonnet-4-6": 48.4, "opus-4-6": 45.0})
+        self.assertEqual(run_ensemble.choose_claude_model(lines, catalog), "claude-sonnet-4-6")
+
     def test_mythos_and_fable_outrank_opus(self) -> None:
         lines = ["Claude Opus 4.6 (Thinking)", "Claude Fable 5 (Thinking)", "Claude Mythos 5"]
         self.assertEqual(run_ensemble.choose_claude_model(lines), "Claude Mythos 5")
@@ -65,6 +88,14 @@ class ClaudeModelSelectionTests(unittest.TestCase):
 
 
 class GeminiModelSelectionTests(unittest.TestCase):
+    def test_live_index_can_rank_flash_above_pro(self) -> None:
+        lines = [
+            "gemini-3.7-flash-high\tGemini 3.7 Flash (High)",
+            "gemini-3.1-pro-high\tGemini 3.1 Pro (High)",
+        ]
+        catalog = static_catalog({"3.7-flash": 56.0, "3.1-pro": 47.7})
+        self.assertEqual(run_ensemble.choose_gemini_model(lines, catalog), "gemini-3.7-flash-high")
+
     def test_ultra_outranks_pro_regardless_of_version(self) -> None:
         lines = ["Gemini 3.1 Pro (High)", "Gemini 3 Ultra (Medium)"]
         self.assertEqual(run_ensemble.choose_gemini_model(lines), "Gemini 3 Ultra (Medium)")
@@ -115,6 +146,11 @@ class GrokModelSelectionTests(unittest.TestCase):
     def test_no_default_returns_empty(self) -> None:
         self.assertEqual(run_ensemble.choose_grok_model(["grok-4", "grok-3"]), "")
 
+    def test_live_index_ranks_all_available_models(self) -> None:
+        lines = ["Default model: grok-4.5", "  * grok-4.5 (default)", "  - grok-4.6"]
+        catalog = static_catalog({"grok-4.5": 50.0, "grok-4.6": 60.9})
+        self.assertEqual(run_ensemble.choose_grok_model(lines, catalog), "grok-4.6")
+
 
 class CodexResolutionTests(unittest.TestCase):
     def test_effort_resolution_order(self) -> None:
@@ -142,6 +178,9 @@ class CodexResolutionTests(unittest.TestCase):
 
 
 class OpenRouterScoringTests(unittest.TestCase):
+    def test_flash_name_is_not_excluded_without_a_capability_reason(self) -> None:
+        self.assertFalse(select_openrouter_free_model.excluded("vendor/new-flash:free", "New Flash"))
+
     def test_context_contribution_is_capped(self) -> None:
         score, _ = select_openrouter_free_model.score_candidate("m", "m", 2_000_000, 0, False, False, "")
         self.assertEqual(score, 500.0)
@@ -150,6 +189,16 @@ class OpenRouterScoringTests(unittest.TestCase):
         with_reasoning, _ = select_openrouter_free_model.score_candidate("m", "m", 100_000, 0, True, False, "")
         without_reasoning, _ = select_openrouter_free_model.score_candidate("m", "m", 100_000, 0, False, False, "")
         self.assertEqual(with_reasoning - without_reasoning, 400.0)
+
+    def test_intelligence_index_dominates_tier_name_and_heuristics(self) -> None:
+        flash = select_openrouter_free_model.Candidate(
+            "vendor/flash:free", "Flash", 32_000, 1_000, False, False, "", "test", 10.0, "", 56.0
+        )
+        pro = select_openrouter_free_model.Candidate(
+            "vendor/pro:free", "Pro", 1_000_000, 128_000, True, True, "", "test", 5_000.0, "", 47.7
+        )
+        ranked = sorted([pro, flash], key=select_openrouter_free_model.candidate_rank, reverse=True)
+        self.assertEqual(ranked[0].model_id, "vendor/flash:free")
 
 
 class OpenRouterTruncationTests(unittest.TestCase):
