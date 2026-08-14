@@ -83,6 +83,12 @@ class RunnerReportingTests(unittest.TestCase):
             "vendor/model-v2 (free)",
         )
 
+    def test_codex_display_includes_reasoning_effort(self) -> None:
+        self.assertEqual(
+            run_ensemble.display_model("codex", "gpt-5.6-sol", "max"),
+            "gpt-5.6-sol [max]",
+        )
+
     def test_prompted_model_rows_preserve_retry_outcomes(self) -> None:
         leg = run_ensemble.LegResult(
             leg="openrouter",
@@ -130,11 +136,30 @@ class RunnerReportingTests(unittest.TestCase):
             Path("/tmp/external_prompt.txt"),
             [leg],
             orchestrator_score=run_ensemble.model_intelligence.IntelligenceScore(60.9),
+            orchestrator_effort="max",
         )
 
         rows = {row["leg"]: row for row in manifest["models_prompted"]}
         self.assertEqual(rows["orchestrator"]["intelligence_score"], 60.9)
+        self.assertEqual(rows["orchestrator"]["display_model"], "gpt-5.6-sol [max]")
+        self.assertEqual(rows["orchestrator"]["reasoning_effort"], "max")
+        self.assertEqual(manifest["orchestrator_effort"], "max")
         self.assertEqual(rows["gemini"]["intelligence_score"], 56.0)
+
+    def test_prompted_codex_model_row_includes_reasoning_effort(self) -> None:
+        rows = run_ensemble.prompted_model_rows(
+            run_ensemble.LegResult(
+                leg="codex",
+                family="codex",
+                model="gpt-5.6-sol",
+                reasoning_effort="high",
+                models_prompted=["gpt-5.6-sol"],
+                ok=True,
+            )
+        )
+
+        self.assertEqual(rows[0]["display_model"], "gpt-5.6-sol [high]")
+        self.assertEqual(rows[0]["reasoning_effort"], "high")
 
     def test_user_action_does_not_mask_full_ensemble(self) -> None:
         args = argparse.Namespace(orchestrator="codex", orchestrator_model="runtime-model", timeout=600)

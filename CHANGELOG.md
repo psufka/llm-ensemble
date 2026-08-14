@@ -9,6 +9,7 @@ Notable changes to `llm-ensemble`.
 - Added live Artificial Analysis Intelligence Index resolution. Active models use OpenRouter's public `benchmarks.artificial_analysis` fields; delisted Claude models fall back to their retained Artificial Analysis pages and are marked as estimated configuration matches when the local runtime only says `Thinking`.
 - Added intelligence score, coding/agentic sub-scores when present, source URL, matched benchmark model, retrieval time, and estimation status to `MODEL_EVENT` output, leg records, blind-answer mappings, and the top-level prompted-model roster.
 - Added Grok installation documentation and explicit `~/.grok/skills/ensemble` support.
+- Added Codex reasoning effort to live model resolution, completion summaries, blind mappings, and roster metadata; Codex labels now render as `<model> [<effort>]`, such as `gpt-5.6-sol [max]`.
 
 ### Changed
 

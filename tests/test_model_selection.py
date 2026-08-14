@@ -176,6 +176,25 @@ class CodexResolutionTests(unittest.TestCase):
             with mock.patch.dict(run_ensemble.os.environ, {"CODEX_HOME": temp_dir}, clear=True):
                 self.assertEqual(run_ensemble.select_codex_effort(""), "xhigh")
 
+    def test_codex_orchestrator_effort_prefers_explicit_runtime_value(self) -> None:
+        args = argparse.Namespace(
+            orchestrator="codex",
+            orchestrator_effort="max",
+            codex_effort="medium",
+        )
+
+        self.assertEqual(run_ensemble.select_orchestrator_effort(args), "max")
+
+    def test_codex_orchestrator_effort_falls_back_to_codex_resolution(self) -> None:
+        args = argparse.Namespace(orchestrator="codex", codex_effort="high")
+
+        self.assertEqual(run_ensemble.select_orchestrator_effort(args), "high")
+
+    def test_non_codex_orchestrator_has_no_reasoning_effort_label(self) -> None:
+        args = argparse.Namespace(orchestrator="claude", orchestrator_effort="max")
+
+        self.assertEqual(run_ensemble.select_orchestrator_effort(args), "")
+
 
 class OpenRouterScoringTests(unittest.TestCase):
     def test_flash_name_is_not_excluded_without_a_capability_reason(self) -> None:

@@ -70,6 +70,7 @@ class LegResult:
     skipped: bool = False
     skip_reason: str = ""
     model: str = ""
+    reasoning_effort: str = ""
     models_prompted: list[str] = field(default_factory=list)
     command: list[str] = field(default_factory=list)
     stdout_path: str = ""
@@ -116,12 +117,14 @@ def command_exists(command: str) -> bool:
     return shutil.which(command) is not None
 
 
-def display_model(family: str, model: str) -> str:
+def display_model(family: str, model: str, reasoning_effort: str = "") -> str:
     if family == "openrouter-pinned" and model:
         return f"{model} (openrouter pinned)"
     if family == "openrouter" and model:
         model_and_version = model[:-5] if model.endswith(":free") else model
         return f"{model_and_version} (free)"
+    if family == "codex" and model and reasoning_effort:
+        return f"{model} [{reasoning_effort}]"
     return model
 
 
@@ -218,14 +221,24 @@ def leg_intelligence_fields(result: LegResult) -> dict[str, Any]:
     }
 
 
-def emit_model_event(event: str, leg: str, family: str, model: str, detail: str = "", extra: dict[str, Any] | None = None) -> None:
+def emit_model_event(
+    event: str,
+    leg: str,
+    family: str,
+    model: str,
+    detail: str = "",
+    extra: dict[str, Any] | None = None,
+    reasoning_effort: str = "",
+) -> None:
     payload = {
         "event": event,
         "leg": leg,
         "family": family,
         "model": model,
-        "display_model": display_model(family, model),
+        "display_model": display_model(family, model, reasoning_effort),
     }
+    if reasoning_effort:
+        payload["reasoning_effort"] = reasoning_effort
     if detail:
         payload["detail"] = detail
     if extra:
@@ -251,11 +264,13 @@ def resolve_only_result(
     family: str,
     model: str,
     score: model_intelligence.IntelligenceScore | None = None,
+    reasoning_effort: str = "",
 ) -> LegResult:
     return apply_intelligence(LegResult(
         leg=leg,
         family=family,
         model=model,
+        reasoning_effort=reasoning_effort,
         skipped=True,
         skip_reason="resolve-only mode",
         exit_code="resolve-only",
@@ -334,6 +349,7 @@ def run_leg_with_retry(run_once: Callable[[], LegResult]) -> LegResult:
         first.model,
         f"cli retry after: {first.failure_reason}"[:200],
         extra=leg_intelligence_fields(first),
+        reasoning_effort=first.reasoning_effort,
     )
     second = run_once()
     second.attempts = [
@@ -695,6 +711,16 @@ def select_codex_effort(requested_effort: str) -> str:
     return "xhigh"
 
 
+def select_orchestrator_effort(args: argparse.Namespace) -> str:
+    """Resolve a Codex orchestrator's effort for display and reporting."""
+    if args.orchestrator != "codex":
+        return ""
+    requested_effort = getattr(args, "orchestrator_effort", "").strip()
+    if requested_effort:
+        return requested_effort
+    return select_codex_effort(getattr(args, "codex_effort", ""))
+
+
 def choose_grok_model(
     lines: list[str],
     catalog: model_intelligence.IntelligenceCatalog | None = None,
@@ -794,6 +820,7 @@ def run_codex(output_dir: Path, prompt: str, model: str, effort: str, timeout: f
         timeout=timeout,
         input_text=prompt,
     )
+    result.reasoning_effort = effort
     return classify_cli_auth_failure(result, CODEX_AUTH_TERMS, CODEX_AUTH_ACTION)
 
 
@@ -1298,9 +1325,10 @@ def resolve_and_run_codex(
         model,
         f"reasoning effort {effort}",
         extra=intelligence_fields(score),
+        reasoning_effort=effort,
     )
     if getattr(args, "resolve_only", False):
-        return resolve_only_result("codex", "codex", model, score)
+        return resolve_only_result("codex", "codex", model, score, effort)
     return run_leg_with_retry(
         lambda: apply_intelligence(run_codex(output_dir, external_prompt, model, effort, args.timeout), score)
     )
@@ -1348,7 +1376,8 @@ def write_blind_answers(legs: list[LegResult], output_dir: Path) -> str:
         mapping[name] = {
             "leg": leg.leg,
             "model": leg.model,
-            "display_model": display_model(leg.family, leg.model),
+            "display_model": display_model(leg.family, leg.model, leg.reasoning_effort),
+            "reasoning_effort": leg.reasoning_effort,
             "truncated": leg.truncated,
             **leg_intelligence_fields(leg),
         }
@@ -1367,7 +1396,8 @@ def prompted_model_rows(leg: LegResult) -> list[dict[str, Any]]:
                 "leg": leg.leg,
                 "family": leg.family,
                 "model": model,
-                "display_model": display_model(leg.family, model),
+                "display_model": display_model(leg.family, model, leg.reasoning_effort),
+                "reasoning_effort": leg.reasoning_effort,
                 "attempt_ok": bool(attempt_ok),
                 **score_fields,
             }
@@ -1383,6 +1413,7 @@ def build_manifest(
     legs: list[LegResult],
     orchestrator_score: model_intelligence.IntelligenceScore | None = None,
     intelligence_metadata: dict[str, Any] | None = None,
+    orchestrator_effort: str = "",
 ) -> dict[str, Any]:
     valid_external_count = sum(1 for leg in legs if leg.ok)
     requires_user_action = any(leg.requires_user_action for leg in legs)
@@ -1399,6 +1430,7 @@ def build_manifest(
     return {
         "orchestrator": args.orchestrator,
         "orchestrator_model": args.orchestrator_model,
+        "orchestrator_effort": orchestrator_effort,
         "mode": mode,
         "valid_external_count": valid_external_count,
         "full_ensemble": valid_external_count >= 2,
@@ -1418,7 +1450,8 @@ def build_manifest(
                 "leg": "orchestrator",
                 "family": args.orchestrator,
                 "model": args.orchestrator_model,
-                "display_model": display_model(args.orchestrator, args.orchestrator_model),
+                "display_model": display_model(args.orchestrator, args.orchestrator_model, orchestrator_effort),
+                "reasoning_effort": orchestrator_effort,
                 "attempt_ok": True,
                 **intelligence_fields(orchestrator_score),
             }
@@ -1435,6 +1468,11 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run external ensemble legs and write status.json.")
     parser.add_argument("--orchestrator", required=True, choices=sorted(ORCHESTRATORS))
     parser.add_argument("--orchestrator-model", default="version not exposed by runtime")
+    parser.add_argument(
+        "--orchestrator-effort",
+        default="",
+        help="current Codex orchestrator reasoning effort, displayed as MODEL [EFFORT]",
+    )
     parser.add_argument("--prompt-file", type=Path)
     parser.add_argument("--output-dir", type=Path)
     parser.add_argument("--timeout", type=float, default=600)
@@ -1496,6 +1534,7 @@ def main() -> int:
     write_text(external_prompt_file, external_prompt)
     intelligence_catalog = make_intelligence_catalog()
     orchestrator_score = intelligence_catalog.lookup(args.orchestrator_model, args.orchestrator)
+    orchestrator_effort = select_orchestrator_effort(args)
     emit_model_event(
         "selected",
         "orchestrator",
@@ -1503,6 +1542,7 @@ def main() -> int:
         args.orchestrator_model,
         "current runtime",
         extra=intelligence_fields(orchestrator_score),
+        reasoning_effort=orchestrator_effort,
     )
 
     skip_requested = set(getattr(args, "skip_leg", None) or [])
@@ -1608,6 +1648,7 @@ def main() -> int:
                         "duration_seconds": leg_result.duration_seconds,
                         **leg_intelligence_fields(leg_result),
                     },
+                    reasoning_effort=leg_result.reasoning_effort,
                 )
 
     order = {"claude": 0, "codex": 1, "gemini": 2, "grok": 3, "openrouter": 4, "openrouter-pinned": 5}
@@ -1621,6 +1662,7 @@ def main() -> int:
         legs,
         orchestrator_score=orchestrator_score,
         intelligence_metadata=intelligence_catalog.metadata(),
+        orchestrator_effort=orchestrator_effort,
     )
     manifest["blind_answers_dir"] = blind_answers_dir
     status_path = output_dir / "status.json"
@@ -1632,7 +1674,7 @@ def main() -> int:
     if blind_answers_dir:
         print(f"BLIND_ANSWERS_DIR={blind_answers_dir}")
     print(
-        f"orchestrator\tok\t{display_model(args.orchestrator, args.orchestrator_model)}"
+        f"orchestrator\tok\t{display_model(args.orchestrator, args.orchestrator_model, orchestrator_effort)}"
         f" · {intelligence_display(orchestrator_score)}"
     )
     if manifest["requires_user_action"]:
@@ -1648,7 +1690,7 @@ def main() -> int:
             state = "skipped"
         else:
             state = "failed"
-        detail = display_model(leg.family, leg.model) or leg.failure_reason or leg.skip_reason
+        detail = display_model(leg.family, leg.model, leg.reasoning_effort) or leg.failure_reason or leg.skip_reason
         if leg.model:
             detail += f" · {leg_intelligence_fields(leg)['intelligence_display']}"
         print(f"{leg.leg}\t{state}\t{detail}")

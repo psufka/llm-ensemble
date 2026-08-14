@@ -23,7 +23,7 @@ Antigravity/`agy`. The ensemble never spawns the direct Claude CLI.
 
 | Role | Tool | Model I run |
 |---|---|---|
-| Orchestrator + answer #1 | **Current AI session** | exact runtime model/version when the host exposes it |
+| Orchestrator + answer #1 | **Current AI session** | exact runtime model/version when the host exposes it; Codex includes reasoning effort as `<model> [<effort>]` |
 | External leg | **Claude** (Anthropic, via Antigravity) | highest Artificial Analysis Intelligence score among models exposed by `agy models`; skipped when Claude is the orchestrator |
 | External leg | **Codex** (OpenAI) | exact configured/overridden model, explicitly pinned with `-m`; reasoning effort from the Codex config (overridable via `--codex-effort`/`ENSEMBLE_CODEX_EFFORT`); skipped when Codex is the orchestrator |
 | External leg | **Gemini** (Google, via Antigravity) | highest-indexed model exposed by `agy models`; skipped when Gemini is the orchestrator |
@@ -108,6 +108,7 @@ event as soon as each external model resolves, before that model receives the us
 
 ```text
 MODEL_EVENT={"event":"selected","leg":"claude","model":"claude-sonnet-4-6","display_model":"claude-sonnet-4-6","intelligence_score":48.4,"intelligence_display":"AA Intelligence 48.4"}
+MODEL_EVENT={"event":"selected","leg":"codex","model":"gpt-5.6-sol","reasoning_effort":"max","display_model":"gpt-5.6-sol [max]","intelligence_score":60.9,"intelligence_display":"AA Intelligence 60.9"}
 MODEL_EVENT={"event":"selected","leg":"openrouter","model":"vendor/model-version:free","display_model":"vendor/model-version (free)","intelligence_score":52.1,"intelligence_display":"AA Intelligence 52.1"}
 ```
 
@@ -126,7 +127,8 @@ MODE=<full|degraded-second-opinion|failed-no-external-answers|needs-user-action|
 ```
 
 Handy flags: `--resolve-only` resolves and announces every leg's exact model *without* sending the prompt
-(a fast model-freshness check), and `--skip-leg`/`--only-leg` control which legs run. `--openrouter-model
+(a fast model-freshness check); `--orchestrator-effort max` records a Codex runtime's effort so the live label is
+`gpt-5.6-sol [max]`; and `--skip-leg`/`--only-leg` control which legs run. `--openrouter-model
 vendor/model` pins any OpenRouter model (free or paid) as an extra `openrouter-pinned` leg on top of the free
 wildcard; add `--openrouter-swap` to have it replace the free leg instead. OpenRouter answers cut
 off at the token limit are flagged `"truncated": true` in `status.json` so a partial answer is never mistaken
@@ -154,8 +156,9 @@ selected models, per-leg exit codes, durations, stdout/stderr paths,
 stdout/stderr sizes, skip reasons, failure reasons, OpenRouter retry attempts, and each model's Artificial Analysis
 Intelligence score/source/retrieval time. The orchestrator reads only
 legs with `"ok": true`, then synthesizes. Its final answer ends with a **Models used** roster repeating the exact
-model/version and intelligence score for the orchestrator and every attempted leg. Because the roster already labels the OpenRouter leg,
-its model is shown as `<exact model/version> (free)`. The temp directory is kept so the orchestrator can read outputs;
+model/version and intelligence score for the orchestrator and every attempted leg. Codex is shown as
+`<exact model> [<reasoning effort>]`. Because the roster already labels the OpenRouter leg, its model is shown as
+`<exact model/version> (free)`. The temp directory is kept so the orchestrator can read outputs;
 delete it after synthesis if the prompt or model outputs are sensitive.
 
 If `status.json` has `"requires_user_action": true`, the orchestrator shows the listed `user_actions` instead of
