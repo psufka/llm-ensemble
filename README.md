@@ -107,7 +107,7 @@ shell snippet. It announces the current orchestrator model immediately. The runn
 event as soon as each external model resolves, before that model receives the user's prompt:
 
 ```text
-MODEL_EVENT={"event":"selected","leg":"claude","model":"claude-opus-4-6-thinking","display_model":"claude-opus-4-6-thinking","intelligence_score":45.0,"intelligence_display":"AA Intelligence 45.0 (estimated configuration match)"}
+MODEL_EVENT={"event":"selected","leg":"claude","model":"claude-opus-4-6-thinking","display_model":"claude-opus-4-6-thinking","intelligence_score":45.0,"intelligence_display":"AA Intelligence 45 (estimated configuration match)"}
 MODEL_EVENT={"event":"selected","leg":"codex","model":"gpt-5.6-sol","reasoning_effort":"max","display_model":"gpt-5.6-sol [max]","intelligence_score":60.9,"intelligence_display":"AA Intelligence 60.9"}
 MODEL_EVENT={"event":"selected","leg":"openrouter","model":"vendor/model-version:free","display_model":"vendor/model-version (free)","intelligence_score":52.1,"intelligence_display":"AA Intelligence 52.1"}
 ```
