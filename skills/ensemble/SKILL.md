@@ -31,7 +31,7 @@ The runner uses every available external leg except the current orchestrator fam
 
 | Leg | Use when | Source |
 |---|---|---|
-| Claude | orchestrator is not Claude/Anthropic and `agy` is installed/authenticated | highest-indexed available Claude model from `agy models` |
+| Claude | orchestrator is not Claude/Anthropic and `agy` is installed/authenticated | prefer any available Claude Opus over Claude Sonnet regardless of AA score; rank remaining candidates by the live index |
 | Codex | orchestrator is not Codex/OpenAI and `codex` is installed/authenticated | `codex exec` |
 | Gemini | orchestrator is not Gemini/Google and `agy` is installed/authenticated | best available Gemini model from `agy models` |
 | Grok | orchestrator is not Grok/xAI and `grok` is installed/authenticated | highest-indexed model exposed by `grok models` |
@@ -43,6 +43,8 @@ The pinned leg exists only when the user names a model. Map the user's phrasing 
 - "ensemble on X" → no pinned flags; free leg only (current default behavior).
 - "ensemble on X and **also use** `vendor/model`" → add `--openrouter-model vendor/model`; the pinned leg runs **in addition to** the free leg.
 - "ensemble on X and use `vendor/model` **instead of** the free model" → add `--openrouter-model vendor/model --openrouter-swap`; the pinned leg **replaces** the free leg.
+
+The Opus-over-Sonnet rule is an explicit preference for the Claude leg only. Gemini remains a separate leg selected by its live AA Intelligence score. Continue reporting each selected model's actual score; do not relabel Opus as the higher-indexed model.
 
 Pass the model id exactly as OpenRouter spells it (e.g. `moonshotai/kimi-k3`). If the user names a model loosely ("kimi", "the paid kimi"), resolve it to the exact OpenRouter id before invoking the runner, and confirm with the user if ambiguous.
 
@@ -130,7 +132,7 @@ Mechanics: write a new prompt file containing the original question plus the ano
 - Records attempt-level `attempt_ok` in the top-level prompted-model roster so a failed OpenRouter model is not mislabeled when a fallback succeeds.
 - Calls `agy models` once per ensemble and reuses that single model-list snapshot for both Claude and Gemini selection.
 - Loads the live Artificial Analysis Intelligence Index from OpenRouter once per ensemble, falls back to Artificial Analysis model pages for delisted Claude entries, and records score/source/retrieval metadata in events, blind mappings, legs, and every top-level prompted-model row.
-- Selects the highest-indexed Claude model from `agy models` on every non-Claude-orchestrated run; product tier/version/Thinking heuristics are used only when no candidate has an index score.
+- Applies the explicit Claude preference before index ranking: when `agy models` exposes any Opus, Sonnet is ineligible even if Sonnet has a higher AA Intelligence score; the live index ranks the remaining candidates.
 - Resolves the Codex model from `--codex-model`, `ENSEMBLE_CODEX_MODEL`, or the active base Codex config, then pins that exact ID with `-m`; resolves reasoning effort the same way (`--codex-effort`, `ENSEMBLE_CODEX_EFFORT`, or the config's `model_reasoning_effort`).
 - Selects the highest-indexed Gemini model from `agy models` on every run; product tier/version/effort heuristics are used only when no candidate has an index score.
 - Ranks every model exposed by `grok models` by the same index (falling back to the CLI default when scores are unavailable), then pins the selected exact ID with `--model`.

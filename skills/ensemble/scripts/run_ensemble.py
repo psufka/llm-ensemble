@@ -573,12 +573,22 @@ def choose_claude_model(
     lines: list[str],
     catalog: model_intelligence.IntelligenceCatalog | None = None,
 ) -> str:
+    eligible_lines = [
+        raw_line
+        for raw_line in lines
+        if raw_line.strip()
+        and any(term in raw_line.lower() for term in ("claude", "mythos", "fable"))
+    ]
+    # Explicit user preference: an available Opus always outranks Sonnet,
+    # even when Sonnet has a higher live Artificial Analysis score. Keep
+    # scoring the remaining candidates normally so the exception stays narrow.
+    if any("opus" in raw_line.lower() for raw_line in eligible_lines):
+        eligible_lines = [raw_line for raw_line in eligible_lines if "sonnet" not in raw_line.lower()]
+
     candidates: list[tuple[bool, float, int, tuple[int, ...], int, str]] = []
-    for raw_line in lines:
+    for raw_line in eligible_lines:
         model = raw_line.strip()
         lowered = model.lower()
-        if not model or not any(term in lowered for term in ("claude", "mythos", "fable")):
-            continue
         thinking = 1 if "thinking" in lowered else 0
         # Score on the full line ("Thinking" may only appear in the display
         # column) but keep only the model-id column as the selectable value.

@@ -2,6 +2,12 @@
 
 Notable changes to `llm-ensemble`.
 
+## 2026-08-20
+
+### Changed
+
+- Claude selection now always prefers an available Opus over Sonnet, even when Sonnet has the higher live Artificial Analysis Intelligence score. The index continues to rank all candidates that remain after this narrow preference is applied.
+
 ## 2026-08-14
 
 ### Added

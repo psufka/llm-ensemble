@@ -24,7 +24,7 @@ Antigravity/`agy`. The ensemble never spawns the direct Claude CLI.
 | Role | Tool | Model I run |
 |---|---|---|
 | Orchestrator + answer #1 | **Current AI session** | exact runtime model/version when the host exposes it; Codex includes reasoning effort as `<model> [<effort>]` |
-| External leg | **Claude** (Anthropic, via Antigravity) | highest Artificial Analysis Intelligence score among models exposed by `agy models`; skipped when Claude is the orchestrator |
+| External leg | **Claude** (Anthropic, via Antigravity) | any available Opus is preferred over Sonnet regardless of Artificial Analysis score; the live index ranks remaining candidates; skipped when Claude is the orchestrator |
 | External leg | **Codex** (OpenAI) | exact configured/overridden model, explicitly pinned with `-m`; reasoning effort from the Codex config (overridable via `--codex-effort`/`ENSEMBLE_CODEX_EFFORT`); skipped when Codex is the orchestrator |
 | External leg | **Gemini** (Google, via Antigravity) | highest-indexed model exposed by `agy models`; skipped when Gemini is the orchestrator |
 | External leg | **Grok** (xAI) | highest-indexed model exposed by `grok models` and explicitly pinned; skipped when Grok is the orchestrator |
@@ -107,7 +107,7 @@ shell snippet. It announces the current orchestrator model immediately. The runn
 event as soon as each external model resolves, before that model receives the user's prompt:
 
 ```text
-MODEL_EVENT={"event":"selected","leg":"claude","model":"claude-sonnet-4-6","display_model":"claude-sonnet-4-6","intelligence_score":48.4,"intelligence_display":"AA Intelligence 48.4"}
+MODEL_EVENT={"event":"selected","leg":"claude","model":"claude-opus-4-6-thinking","display_model":"claude-opus-4-6-thinking","intelligence_score":45.0,"intelligence_display":"AA Intelligence 45.0 (estimated configuration match)"}
 MODEL_EVENT={"event":"selected","leg":"codex","model":"gpt-5.6-sol","reasoning_effort":"max","display_model":"gpt-5.6-sol [max]","intelligence_score":60.9,"intelligence_display":"AA Intelligence 60.9"}
 MODEL_EVENT={"event":"selected","leg":"openrouter","model":"vendor/model-version:free","display_model":"vendor/model-version (free)","intelligence_score":52.1,"intelligence_display":"AA Intelligence 52.1"}
 ```
@@ -214,11 +214,12 @@ These CLIs are coding *agents* — normally they read, write, and run commands. 
   and bare positional `grok "q"` —
   per grok's own `~/.grok/docs/.../14-headless-mode.md`. (`--max-turns 1` was tested and **dropped** — it
   truncated/failed complex answers.)
-- **Claude and Gemini selected fresh each run** - the runner calls `agy models` once per ensemble, reuses that
-  single snapshot for both legs, and ranks every available model by the live Artificial Analysis Intelligence
-  Index. Tier labels such as Opus/Sonnet and Pro/Flash are fallback heuristics only when the index cannot match a
-  candidate. If `agy` clearly needs recredentialing, the runner returns `needs-user-action` instead of quietly
-  skipping either leg.
+- **Claude and Gemini selected fresh each run** - the runner calls `agy models` once per ensemble and reuses that
+  single snapshot for both legs. For Claude, an explicit preference makes Sonnet ineligible whenever any Opus is
+  available, even if Sonnet has the higher live Artificial Analysis Intelligence score; the index ranks the
+  remaining candidates. Gemini continues to use the live index first, with Pro/Flash heuristics only when the index
+  cannot match a candidate. If `agy` clearly needs recredentialing, the runner returns `needs-user-action` instead
+  of quietly skipping either leg.
 
 - **Codex and Grok versions are resolved, scored, then pinned** — Codex resolves from `--codex-model`,
   `ENSEMBLE_CODEX_MODEL`, or the active base Codex config and passes the exact ID with `-m`. Grok resolves its

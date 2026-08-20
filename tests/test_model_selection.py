@@ -34,13 +34,21 @@ def static_catalog(scores: dict[str, float]) -> mock.Mock:
 
 
 class ClaudeModelSelectionTests(unittest.TestCase):
-    def test_live_index_can_rank_sonnet_above_opus(self) -> None:
+    def test_opus_outranks_higher_indexed_sonnet(self) -> None:
         lines = [
             "claude-sonnet-4-6\tClaude Sonnet 4.6 (Thinking)",
             "claude-opus-4-6-thinking\tClaude Opus 4.6 (Thinking)",
         ]
         catalog = static_catalog({"sonnet-4-6": 48.4, "opus-4-6": 45.0})
-        self.assertEqual(run_ensemble.choose_claude_model(lines, catalog), "claude-sonnet-4-6")
+        self.assertEqual(run_ensemble.choose_claude_model(lines, catalog), "claude-opus-4-6-thinking")
+
+    def test_live_index_still_ranks_candidates_after_opus_preference(self) -> None:
+        lines = [
+            "claude-opus-4-5-thinking\tClaude Opus 4.5 (Thinking)",
+            "claude-opus-4-6-thinking\tClaude Opus 4.6 (Thinking)",
+        ]
+        catalog = static_catalog({"opus-4-5": 46.0, "opus-4-6": 45.0})
+        self.assertEqual(run_ensemble.choose_claude_model(lines, catalog), "claude-opus-4-5-thinking")
 
     def test_mythos_and_fable_outrank_opus(self) -> None:
         lines = ["Claude Opus 4.6 (Thinking)", "Claude Fable 5 (Thinking)", "Claude Mythos 5"]
