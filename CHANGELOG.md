@@ -2,6 +2,13 @@
 
 Notable changes to `llm-ensemble`.
 
+## 2026-08-25
+
+### Added
+
+- Added `--allow-web` for live-search prompts: external legs may use web search and page fetch, the write sandbox stays on, and an exit-0 tool-use refusal is recorded as a failed leg instead of a valid answer. Default ensembles remain answer-only.
+
+
 ## 2026-08-20
 
 ### Changed

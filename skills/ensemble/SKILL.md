@@ -85,7 +85,7 @@ When the user asks for an ensemble:
 
    The score is the live Artificial Analysis Intelligence Index, normally read through OpenRouter's model catalog. For a model absent from OpenRouter, the runner also checks its Artificial Analysis model page and marks an inferred runtime-to-benchmark configuration match as estimated. Never report `not indexed` merely because OpenRouter omitted a model. If no score is available after both checks, say `AA Intelligence score unavailable`; when the runtime version itself is hidden, add `runtime version not exposed`.
 
-   Useful flags: `--resolve-only` resolves and announces every leg's exact model without sending the user prompt (use it for model-freshness checks); `--skip-leg <leg>` / `--only-leg <leg>` (repeatable) control which legs run; `--openrouter-model <id>` pins a user-named OpenRouter model as an additional leg; `--openrouter-swap` makes that pinned model replace the free leg instead.
+   Useful flags: `--resolve-only` resolves and announces every leg's exact model without sending the user prompt (use it for model-freshness checks); `--skip-leg <leg>` / `--only-leg <leg>` (repeatable) control which legs run; `--openrouter-model <id>` pins a user-named OpenRouter model as an additional leg; `--openrouter-swap` makes that pinned model replace the free leg instead; `--allow-web` keeps the write sandbox but lets legs use web search/page-fetch (live-search prompts only; default remains answer-only).
 
    The runner prints these completion pointers at the end:
 
@@ -148,7 +148,7 @@ Mechanics: write a new prompt file containing the original question plus the ano
 - Ranks free OpenRouter models by their embedded Artificial Analysis intelligence score, uses metadata heuristics only for unindexed candidates/ties, concurrently smoke-tests candidates, then retries alternates on retryable upstream/capacity failures. Tier words such as Flash, Pro, Opus, and Sonnet never override a higher live score.
 - Clamps OpenRouter max tokens to the model's completion limit and flags answers cut off at the limit as `truncated`.
 - Converts OpenRouter selection exhaustion into a normal leg failure so other answers and `status.json` survive.
-- Supports `--resolve-only` (announce exact models without prompting) and `--skip-leg`/`--only-leg`.
+- Supports `--resolve-only` (announce exact models without prompting), `--skip-leg`/`--only-leg`, and `--allow-web` (web search/page-fetch allowed; write sandbox stays on). `--allow-web` also marks tool-use refusals as failed so an exit-0 "I can't browse" essay is not counted as an answer.
 - Records machine-readable exit codes, durations, stdout/stderr sizes, selected models, attempts, and failure reasons.
 
 The runner keeps `ENSEMBLE_DIR` so the orchestrator can read the outputs. Remove that directory after synthesis if the prompt or model outputs are sensitive and you do not need the artifacts.
@@ -164,3 +164,9 @@ The runner keeps `ENSEMBLE_DIR` so the orchestrator can read the outputs. Remove
 ## File Attachments
 
 Inline file contents into the shared prompt file. Do not hand Grok or another agent a path unless it must explore a directory and is sandboxed read-only. Inlining is safer for untrusted files because every model sees identical content and the runner can keep external legs answer-only.
+
+## Live-web / search mode
+
+Default ensembles stay answer-only. For a live-search prompt (job search, current-events lookup) pass `--allow-web`. That swaps the wrapper to allow web search and page fetch, keeps the write sandbox, and rejects tool-use refusals. Do not use `--allow-web` for ordinary second-opinion questions.
+
+Skip tool-less legs on search runs (`--skip-leg openrouter`, and `--skip-leg claude` until Claude-via-agy browsing is verified). Send a discovery prompt, not a "validate every posting" brief.

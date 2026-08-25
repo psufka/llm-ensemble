@@ -126,7 +126,7 @@ STATUS_JSON=/tmp/ensemble-.../status.json
 MODE=<full|degraded-second-opinion|failed-no-external-answers|needs-user-action|resolve-only>
 ```
 
-Handy flags: `--resolve-only` resolves and announces every leg's exact model *without* sending the prompt
+Handy flags: `--allow-web` lets live-search prompts use web/page-fetch while keeping the write sandbox (default remains answer-only); `--resolve-only` resolves and announces every leg's exact model *without* sending the prompt
 (a fast model-freshness check); `--orchestrator-effort max` records a Codex runtime's effort so the live label is
 `gpt-5.6-sol [max]`; and `--skip-leg`/`--only-leg` control which legs run. `--openrouter-model
 vendor/model` pins any OpenRouter model (free or paid) as an extra `openrouter-pinned` leg on top of the free

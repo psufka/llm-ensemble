@@ -350,3 +350,69 @@ class PinnedDispatchTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AllowWebTests(unittest.TestCase):
+    def test_looks_like_tool_refusal_detects_claude_style_essay(self) -> None:
+        refusal = (
+            "I can't fulfill this job search request under the stated constraints. "
+            "The task constraints say \"Do not call tools.\" "
+            "I have no way to search job boards. Fabricating results would violate the prompt."
+        )
+        self.assertTrue(run_ensemble.looks_like_tool_refusal(refusal))
+
+    def test_looks_like_tool_refusal_ignores_real_search_output(self) -> None:
+        answer = (
+            "I'll treat the brief as the actual task and verify openings. "
+            "https://jobs.ashbyhq.com/ambiencehealthcare/45483797-4cbd-42b0-8eac-55b96259369e "
+            "https://jobs.ashbyhq.com/abridge/af0c155f-d2da-4a0d-a63a-196937028dc4"
+        )
+        self.assertFalse(run_ensemble.looks_like_tool_refusal(answer))
+
+    def test_mark_tool_refusal_fails_ok_leg(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            stdout = Path(temp_dir) / "claude.out"
+            stdout.write_text(
+                "I can't fulfill this job search request under the stated constraints. Do not call tools.",
+                encoding="utf-8",
+            )
+            result = run_ensemble.LegResult(
+                leg="claude",
+                family="claude",
+                ok=True,
+                stdout_path=str(stdout),
+            )
+            marked = run_ensemble.mark_tool_refusal(result)
+            self.assertFalse(marked.ok)
+            self.assertEqual(marked.failure_reason, "tool-use refusal")
+
+    def test_allow_web_uses_search_wrapper(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            prompt_path = temp_path / "prompt.txt"
+            prompt_path.write_text("find jobs", encoding="utf-8")
+            args = argparse.Namespace(
+                orchestrator="other",
+                orchestrator_model="test-runtime",
+                prompt_file=prompt_path,
+                output_dir=temp_path / "output",
+                timeout=10,
+                agy_max_prompt_bytes=100_000,
+                codex_model="",
+                codex_effort="",
+                grok_model="",
+                keep_workdirs=False,
+                resolve_only=False,
+                skip_leg=["claude", "gemini", "codex", "grok", "openrouter"],
+                only_leg=None,
+                allow_web=True,
+            )
+            with mock.patch.object(run_ensemble, "parse_args", return_value=args), mock.patch.object(
+                run_ensemble,
+                "make_intelligence_catalog",
+                return_value=EmptyIntelligenceCatalog(),
+            ), mock.patch.object(run_ensemble, "command_exists", return_value=False), mock.patch("builtins.print"):
+                self.assertEqual(run_ensemble.main(), 0)
+            wrapper = (temp_path / "output" / "external_prompt.txt").read_text(encoding="utf-8")
+            self.assertIn("You may use web search and page-fetch tools", wrapper)
+            self.assertNotIn("Do not call tools", wrapper)
