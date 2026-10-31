@@ -8,6 +8,24 @@ This is how I run an "LLM council" from the command line. Inspired by Andrej Kar
 [llm-council](https://github.com/karpathy/llm-council), but stripped down to CLI tools, a free OpenRouter
 wildcard, and a drop-in skill.
 
+## Pick the answering models
+
+1. **Use ensemble on this question** runs the full roster below.
+2. **Use ensemble to look this up using Opus 5.5** queries the signed-in catalogs and sends the prompt only to Opus. With the advertised agy low, medium, and high variants, it selects `claude-opus-5-5-high`. Request “Opus 5.5 medium” to pin that effort.
+3. **Use ensemble with Opus 5.5 and Grok 4.7** compares just those answers.
+
+The same runner handles all three. For example, from the repository root:
+
+```sh
+runner=skills/ensemble/scripts/run_ensemble.py
+python3 "$runner" --orchestrator codex --target "Opus 5.5" --resolve-only
+python3 "$runner" --orchestrator codex --target "Opus 5.5" --target "Grok 4.7" --prompt-file question.txt
+```
+
+Repeat `--target` for each answering model. A name qualifies its route with `agy:`, `grok:`, `codex:`, or `openrouter:`. Automatic routing prefers installed CLIs and offers paid OpenRouter for an explicit choice. Unqualified ambiguous names return the matching IDs. Named mode permits same-family calls and retries only the selected model. The caller coordinates.
+
+A single success prints `MODE=single-model` and `ANSWER_FILE`. Multiple requested successes print `MODE=selected-models`. Incomplete runs exit nonzero and keep successful answers, per-target outcomes, and the exact roster in `STATUS_JSON`. For web lookups, use `--allow-web` on verified browsing routes or `--sources-file sources.txt` for URLs and excerpts fetched by the caller. Attribute the sources and the answer separately.
+
 ## The idea
 
 Every model has blind spots. Ask one and you get one perspective. Ask several - from different labs -
@@ -95,6 +113,10 @@ rsync -a llm-ensemble/skills/ensemble/ ~/.claude/skills/ensemble/
 rsync -a llm-ensemble/skills/ensemble/ ~/.codex/skills/ensemble/
 rsync -a llm-ensemble/skills/ensemble/ ~/.grok/skills/ensemble/
 ```
+
+For a maintained checkout on a Mac, link the complete skill directory into each host's global skills folder. Compare any existing copy with the checkout before migrating it. Antigravity's app and CLI share `~/.gemini/config/skills/ensemble`. Verify discovery in fresh sessions, including `grok inspect` in Grok Build and `/skills` in agy. [Antigravity discovery](https://antigravity.google/docs/customization-discovery?tab=cli)
+
+Grok Bot uses a private skill in its own library. Save a short `ensemble` instruction telling the bot to read this checkout's `skills/ensemble/SKILL.md` through Mac local execution and run the adjacent runner on the Mac. Verify through the bot with a named `--resolve-only` request. [Grok Bot private skills](https://docs.x.ai/grok-bot/skills-routines-and-automations)
 
 The skill checks installed/authenticated tools (it never installs them), skips missing tools, and skips the
 same model family as the current orchestrator.
@@ -259,32 +281,6 @@ These CLIs are coding *agents* — normally they read, write, and run commands. 
   no fallback to other models — you chose it — just one retry on retryable upstream errors and a max-tokens
   clamp from the model's metadata (important for reasoning models with small completion caps). Additive by
   default; `--openrouter-swap` replaces the free wildcard with it.
-
-## Planned single-model mode
-
-The runner already supports a restricted call such as `--only-leg agy` (Argon), `--only-leg claude` (Claude via agy), `--only-leg grok`, or
-`--only-leg openrouter-pinned --openrouter-model vendor/model`. Today it still treats one successful external
-answer as `degraded-second-opinion`, retains the orchestrator's answer/comparison workflow, and skips the
-orchestrator's own family. A deliberate single-model request needs a distinct workflow. The following is a
-design plan, not an implemented flag:
-
-1. Add `--single-model agy|codex|grok|openrouter`, with an optional exact `--model <id>` override.
-   `agy` defaults to the advertised Argon ID; Codex and Grok reuse their existing model resolvers; OpenRouter
-   uses the named model or resolves one free model from catalog metadata. Reject conflicting multi-leg flags.
-   Natural-language requests such as "ask only agy" or "use just Grok" should select this mode.
-2. Resolve and call exactly one selected model. Allow the orchestrator's family because this mode does not
-   claim independent cross-checking. Keep timeout, sandbox, output validation, credential handling, and bounded
-   retries of the same model. Disable alternate-model fallbacks and OpenRouter's multi-candidate smoke probes;
-   if the chosen model fails, report the failure instead of silently choosing another.
-3. Record `mode: single-model`, the requested provider, the exact selected model, and its answer path. Include
-   the host only as coordinator metadata, not as an answering model. A missing or failed target must return a
-   nonzero exit status and a useful reason; successful single-model execution returns zero.
-4. In the skill, omit the pre-registered host answer, blinded comparison, consensus claims, and debate for this
-   mode. Return the selected model's answer with a concise exact-model attribution and relevant limitations.
-   Preserve the existing ensemble workflow as the default.
-5. Test provider routing, same-family requests, conflicting flags, one selected model per request, missing-model
-   and auth failures, and absence of alternate-model calls. Add a live exact-output smoke test for each available
-   provider, checking both its answer and the recorded command/model; unavailable providers remain explicit failures.
 
 ## When to use it
 

@@ -24,6 +24,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPT_DIR))
 
 import model_intelligence
+import named_targets
 import openrouter_query
 import select_openrouter_free_model
 
@@ -122,6 +123,8 @@ class LegResult:
     intelligence_estimated: bool = False
     intelligence_note: str = ""
     model_intelligence: dict[str, dict[str, Any]] = field(default_factory=dict)
+    requested_target: str = ""
+    provider: str = ""
 
 
 def read_text(path: Path) -> str:
@@ -149,7 +152,7 @@ def display_model(family: str, model: str, reasoning_effort: str = "") -> str:
     if family == "openrouter" and model:
         model_and_version = model[:-5] if model.endswith(":free") else model
         return f"{model_and_version} (free)"
-    if family == "codex" and model and reasoning_effort:
+    if family in ("codex", "grok") and model and reasoning_effort:
         return f"{model} [{reasoning_effort}]"
     return model
 
@@ -378,10 +381,12 @@ def run_leg_with_retry(run_once: Callable[[], LegResult]) -> LegResult:
         reasoning_effort=first.reasoning_effort,
     )
     second = run_once()
+    second.models_prompted = first.models_prompted + second.models_prompted
     second.attempts = [
         {
             "phase": "cli",
             "attempt": 1,
+            "ok": first.ok,
             "exit_code": first.exit_code,
             "failure_reason": first.failure_reason,
             "duration_seconds": first.duration_seconds,
@@ -482,7 +487,6 @@ def run_process_leg(
         leg=leg,
         family=family,
         model=model,
-        models_prompted=[model] if model else [],
         command=command_for_status or args,
         stdout_path=str(stdout_path),
         stderr_path=str(stderr_path),
@@ -501,6 +505,8 @@ def run_process_leg(
                 cwd=str(cwd) if cwd else None,
                 start_new_session=True,
             )
+            if model:
+                result.models_prompted.append(model)
             try:
                 proc.communicate(input=input_text, timeout=timeout)
                 result.exit_code = proc.returncode
@@ -785,22 +791,7 @@ def choose_grok_model(
     lines: list[str],
     catalog: model_intelligence.IntelligenceCatalog | None = None,
 ) -> str:
-    default_model = ""
-    available: list[str] = []
-    for raw_line in lines:
-        match = re.match(r"\s*Default model:\s*(\S+)\s*$", raw_line, re.I)
-        if match:
-            default_model = match.group(1)
-            if default_model not in available:
-                available.append(default_model)
-    for raw_line in lines:
-        match = re.match(r"\s*[-*]\s*(\S+)(?:\s*\(default\))?\s*$", raw_line, re.I)
-        if match:
-            model = match.group(1)
-            if "(default)" in raw_line.lower() and not default_model:
-                default_model = model
-            if model not in available:
-                available.append(model)
+    default_model, available = named_targets.grok_models(lines)
     if catalog is not None and available:
         ranked: list[tuple[bool, float, tuple[int, ...], bool, str]] = []
         for model in available:
@@ -855,7 +846,7 @@ def select_grok_model(
     return model, ""
 
 
-def run_codex(output_dir: Path, prompt: str, model: str, effort: str, timeout: float) -> LegResult:
+def run_codex(output_dir: Path, prompt: str, model: str, effort: str, timeout: float, *, named: bool = False) -> LegResult:
     args = [
         "codex",
         "exec",
@@ -864,10 +855,10 @@ def run_codex(output_dir: Path, prompt: str, model: str, effort: str, timeout: f
         "read-only",
         "--model",
         model,
+        *(["--disable", "multi_agent"] if named else []),
         "-c",
         "tools.web_search=true",
-        "-c",
-        f'model_reasoning_effort="{effort}"',
+        *(["-c", f'model_reasoning_effort="{effort}"'] if effort else []),
         "-",
     ]
     result = run_process_leg(
@@ -879,6 +870,7 @@ def run_codex(output_dir: Path, prompt: str, model: str, effort: str, timeout: f
         stderr_path=output_dir / "codex.err",
         timeout=timeout,
         input_text=prompt,
+        cwd=output_dir if named else None,
     )
     result.reasoning_effort = effort
     return classify_cli_auth_failure(result, CODEX_AUTH_TERMS, CODEX_AUTH_ACTION)
@@ -962,13 +954,15 @@ def run_gemini(output_dir: Path, prompt: str, model: str, timeout: float, max_pr
     return run_agy_model(output_dir, prompt, model, timeout, max_prompt_bytes, "gemini", "gemini", "gemini", "agy-gemini.log")
 
 
-def run_grok(output_dir: Path, prompt_file: Path, model: str, timeout: float, keep_workdirs: bool) -> LegResult:
+def run_grok(output_dir: Path, prompt_file: Path, model: str, timeout: float, keep_workdirs: bool,
+             effort: str = "") -> LegResult:
     grok_cwd = output_dir / "grok-cwd"
     grok_cwd.mkdir(parents=True, exist_ok=True)
     args = [
         "grok",
         "--model",
         model,
+        *(["--reasoning-effort", effort] if effort else []),
         "--no-memory",
         "--sandbox",
         "read-only",
@@ -988,6 +982,7 @@ def run_grok(output_dir: Path, prompt_file: Path, model: str, timeout: float, ke
         stderr_path=output_dir / "grok.err",
         timeout=timeout,
     )
+    result.reasoning_effort = effort
     combined = ""
     for path_text in [result.stdout_path, result.stderr_path]:
         path = Path(path_text)
@@ -1256,6 +1251,7 @@ def run_openrouter_pinned(output_dir: Path, prompt: str, args: argparse.Namespac
                 temperature=args.openrouter_temperature,
                 max_tokens=max_tokens,
                 timeout=args.openrouter_timeout,
+                free_only=getattr(args, "openrouter_free_only", False),
             )
             truncated = finish_reason == "length"
             write_text(stdout_path, content + "\n")
@@ -1453,8 +1449,97 @@ def write_blind_answers(legs: list[LegResult], output_dir: Path) -> str:
     return str(answers_dir)
 
 
+def run_target(request: str, target: named_targets.Target, args: argparse.Namespace, output_dir: Path,
+               prompt: str, prompt_file: Path, catalog: model_intelligence.IntelligenceCatalog) -> LegResult:
+    output_dir.mkdir(mode=0o700)
+    provider, model, effort = target.provider, target.model, target.effort
+    family = provider
+    if provider == "agy":
+        family = next((f for f in ("claude", "gemini") if f in (model + " " + target.label).lower()), "agy")
+    elif provider == "openrouter":
+        family = "openrouter-pinned"
+    score = catalog.lookup(model, family)
+    if args.resolve_only or provider != "openrouter":
+        fields = {**intelligence_fields(score), "provider": provider, "requested_target": request}
+        emit_model_event("selected", family, family, model, extra=fields, reasoning_effort=effort)
+
+    def call_cli() -> LegResult:
+        if provider == "agy":
+            result = run_agy_model(output_dir, prompt, model, args.timeout, args.agy_max_prompt_bytes,
+                                   family, family, "answer", "agy.log")
+        elif provider == "codex":
+            result = run_codex(output_dir, prompt, model, effort, args.timeout, named=True)
+        else:
+            result = run_grok(output_dir, prompt_file, model, args.timeout, args.keep_workdirs, effort)
+        result.reasoning_effort = effort
+        return apply_intelligence(result, score)
+
+    if args.resolve_only:
+        result = resolve_only_result(family, family, model, score, effort)
+        if provider == "openrouter":
+            result.skip_reason += " (free route)" if target.free else " (paid route; request openrouter explicitly)"
+            if not os.environ.get("OPENROUTER_API_KEY"):
+                result.skip_reason += "; OPENROUTER_API_KEY is not set"
+    elif provider == "openrouter" and args.allow_web:
+        action = "Supply excerpts and URLs with --sources-file for a lookup through OpenRouter."
+        result = skip_result(family, family, action, True, action)
+        result.model = model
+    elif provider == "openrouter":
+        pinned_args = argparse.Namespace(**{**vars(args), "openrouter_model": model,
+                                            "openrouter_free_only": target.free})
+        result = run_openrouter_pinned(output_dir, prompt, pinned_args)
+    else:
+        result = run_leg_with_retry(call_cli)
+        if args.allow_web:
+            result = mark_tool_refusal(result)
+    result.provider = provider
+    result.requested_target = request
+    if not args.resolve_only:
+        emit_model_event("finished", result.leg, family, model, result.failure_reason or "ok",
+                         extra={"ok": result.ok, "provider": provider, "requested_target": request},
+                         reasoning_effort=effort)
+    return result
+
+
+def run_named_targets(args: argparse.Namespace, output_dir: Path, prompt: str, prompt_file: Path,
+                      catalog: model_intelligence.IntelligenceCatalog) -> list[LegResult]:
+    catalogs = named_targets.Catalogs()
+    results: dict[int, LegResult] = {}
+    seen: set[named_targets.Target] = set()
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(8, len(args.target))) as pool:
+        futures = {}
+        for index, request in enumerate(args.target, start=1):
+            try:
+                target = catalogs.resolve(request, args.resolve_only)
+            except named_targets.TargetError as exc:
+                result = skip_result(f"target-{index}", "unknown", str(exc), True, str(exc))
+                result.requested_target = request
+                result.provider = named_targets.split_target(request)[0]
+                if exc.target:
+                    result.provider = exc.target.provider
+                    result.model = exc.target.model
+                    result.reasoning_effort = exc.target.effort
+                results[index] = result
+                emit_model_event("skipped", result.leg, result.family, "", str(exc), {"requested_target": request})
+                continue
+            if target not in seen:
+                seen.add(target)
+                future = pool.submit(run_target, request, target, args, output_dir / f"target-{index}",
+                                     prompt, prompt_file, catalog)
+                futures[future] = (index, request, target)
+        for future in concurrent.futures.as_completed(futures):
+            index, request, target = futures[future]
+            try:
+                results[index] = future.result()
+            except Exception as exc:
+                result = skip_result(f"target-{index}", target.provider, f"runner exception: {exc}")
+                result.requested_target, result.provider, result.model = request, target.provider, target.model
+                results[index] = result
+    return [results[index] for index in sorted(results)]
+
+
 def prompted_model_rows(leg: LegResult) -> list[dict[str, Any]]:
-    query_attempts = [attempt for attempt in leg.attempts if attempt.get("phase") == "query"]
+    query_attempts = [attempt for attempt in leg.attempts if attempt.get("phase") in ("query", "cli")]
     rows: list[dict[str, Any]] = []
     for index, model in enumerate(leg.models_prompted):
         attempt_ok = query_attempts[index].get("ok") if index < len(query_attempts) else leg.ok
@@ -1467,6 +1552,7 @@ def prompted_model_rows(leg: LegResult) -> list[dict[str, Any]]:
                 "display_model": display_model(leg.family, model, leg.reasoning_effort),
                 "reasoning_effort": leg.reasoning_effort,
                 "attempt_ok": bool(attempt_ok),
+                **({"provider": leg.provider, "requested_target": leg.requested_target} if leg.provider else {}),
                 **score_fields,
             }
         )
@@ -1485,8 +1571,14 @@ def build_manifest(
 ) -> dict[str, Any]:
     valid_external_count = sum(1 for leg in legs if leg.ok)
     requires_user_action = any(leg.requires_user_action for leg in legs)
+    targets = getattr(args, "target", None)
     if getattr(args, "resolve_only", False):
         mode = "resolve-only"
+    elif targets and valid_external_count:
+        if valid_external_count != len(legs):
+            mode = "partial-targets"
+        else:
+            mode = "single-model" if len(legs) == 1 else "selected-models"
     elif valid_external_count >= 2:
         mode = "full"
     elif valid_external_count == 1:
@@ -1495,13 +1587,24 @@ def build_manifest(
         mode = "needs-user-action"
     else:
         mode = "failed-no-external-answers"
-    return {
+    models_prompted = [row for leg in legs for row in prompted_model_rows(leg)]
+    if not targets:
+        models_prompted.insert(0, {
+            "leg": "orchestrator",
+            "family": args.orchestrator,
+            "model": args.orchestrator_model,
+            "display_model": display_model(args.orchestrator, args.orchestrator_model, orchestrator_effort),
+            "reasoning_effort": orchestrator_effort,
+            "attempt_ok": True,
+            **intelligence_fields(orchestrator_score),
+        })
+    manifest = {
         "orchestrator": args.orchestrator,
         "orchestrator_model": args.orchestrator_model,
         "orchestrator_effort": orchestrator_effort,
         "mode": mode,
         "valid_external_count": valid_external_count,
-        "full_ensemble": valid_external_count >= 2,
+        "full_ensemble": not targets and valid_external_count >= 2,
         "requires_user_action": requires_user_action,
         "user_actions": list(dict.fromkeys(leg.user_action for leg in legs if leg.user_action)),
         "prompt_file": str(prompt_file),
@@ -1513,23 +1616,14 @@ def build_manifest(
             "errors": [],
         },
         "legs": [asdict(leg) for leg in legs],
-        "models_prompted": [
-            {
-                "leg": "orchestrator",
-                "family": args.orchestrator,
-                "model": args.orchestrator_model,
-                "display_model": display_model(args.orchestrator, args.orchestrator_model, orchestrator_effort),
-                "reasoning_effort": orchestrator_effort,
-                "attempt_ok": True,
-                **intelligence_fields(orchestrator_score),
-            }
-        ]
-        + [
-            row
-            for leg in legs
-            for row in prompted_model_rows(leg)
-        ],
+        "models_prompted": models_prompted,
     }
+    if targets:
+        manifest["requested_targets"] = targets
+        manifest["source_mode"] = "web-enabled" if args.allow_web else "answer-only"
+        if args.sources_file:
+            manifest["source_mode"] = "host-supplied"
+    return manifest
 
 
 def parse_args() -> argparse.Namespace:
@@ -1542,6 +1636,9 @@ def parse_args() -> argparse.Namespace:
         help="current Codex orchestrator reasoning effort, displayed as MODEL [EFFORT]",
     )
     parser.add_argument("--prompt-file", type=Path)
+    parser.add_argument("--target", action="append", metavar="[PROVIDER:]MODEL",
+                        help="route only to this named model, repeat to compare named models")
+    parser.add_argument("--sources-file", type=Path, help="host-gathered excerpts and URLs for named targets")
     parser.add_argument("--output-dir", type=Path)
     parser.add_argument("--timeout", type=float, default=600)
     parser.add_argument("--agy-max-prompt-bytes", type=int, default=100_000)
@@ -1589,38 +1686,17 @@ def parse_args() -> argparse.Namespace:
         parser.error("--prompt-file is required unless --resolve-only is set")
     if args.openrouter_swap and not args.openrouter_model:
         parser.error("--openrouter-swap requires --openrouter-model")
+    if args.target and (args.only_leg or args.skip_leg or args.openrouter_model or args.codex_model or args.grok_model
+                        or args.codex_effort):
+        parser.error("use --target on its own for model selection; put any effort in the target name")
+    if args.sources_file and (not args.target or args.allow_web):
+        parser.error("--sources-file requires --target and is an alternative to --allow-web")
     return args
 
 
-def main() -> int:
-    args = parse_args()
-    prompt_text = read_text(args.prompt_file.expanduser().resolve()) if args.prompt_file else ""
-    output_dir = args.output_dir.expanduser().resolve() if args.output_dir else Path(tempfile.mkdtemp(prefix="ensemble-")).resolve()
-    output_dir.mkdir(parents=True, exist_ok=True)
-    # The directory holds the full prompt and model outputs; keep it private
-    # even when the caller supplies --output-dir (mkdtemp is already 0700).
-    os.chmod(output_dir, 0o700)
-
-    prompt_file = output_dir / "prompt.txt"
-    external_prompt_file = output_dir / "external_prompt.txt"
-    write_text(prompt_file, prompt_text)
+def run_default_legs(args: argparse.Namespace, output_dir: Path, prompt_text: str, external_prompt: str,
+                     external_prompt_file: Path, intelligence_catalog: model_intelligence.IntelligenceCatalog) -> list[LegResult]:
     allow_web = bool(getattr(args, "allow_web", False))
-    system_instruction = ALLOW_WEB_SYSTEM_INSTRUCTION if allow_web else EXTERNAL_SYSTEM_INSTRUCTION
-    external_prompt = f"{system_instruction}\n\nUSER PROMPT:\n{prompt_text}"
-    write_text(external_prompt_file, external_prompt)
-    intelligence_catalog = make_intelligence_catalog()
-    orchestrator_score = intelligence_catalog.lookup(args.orchestrator_model, args.orchestrator)
-    orchestrator_effort = select_orchestrator_effort(args)
-    emit_model_event(
-        "selected",
-        "orchestrator",
-        args.orchestrator,
-        args.orchestrator_model,
-        "current runtime",
-        extra=intelligence_fields(orchestrator_score),
-        reasoning_effort=orchestrator_effort,
-    )
-
     skip_requested = {LEG_ALIASES.get(name, name) for name in (getattr(args, "skip_leg", None) or [])}
     only_requested = {LEG_ALIASES.get(name, name) for name in (getattr(args, "only_leg", None) or [])}
     if only_requested:
@@ -1731,7 +1807,59 @@ def main() -> int:
 
     order = {"claude": 0, "codex": 1, "gemini": 2, "grok": 3, "openrouter": 4, "openrouter-pinned": 5}
     legs.sort(key=lambda leg: order.get(leg.leg, 99))
-    blind_answers_dir = "" if getattr(args, "resolve_only", False) else write_blind_answers(legs, output_dir)
+    return legs
+
+
+def main() -> int:
+    args = parse_args()
+    prompt_text = read_text(args.prompt_file.expanduser().resolve()) if args.prompt_file else ""
+    output_dir = args.output_dir.expanduser().resolve() if args.output_dir else Path(tempfile.mkdtemp(prefix="ensemble-")).resolve()
+    output_dir.mkdir(parents=True, exist_ok=True)
+    prompt_file = output_dir / "prompt.txt"
+    # The directory holds the full prompt and model outputs; keep it private
+    # even when the caller supplies --output-dir (mkdtemp is already 0700).
+    targets = getattr(args, "target", None)
+    if targets and any(output_dir.iterdir()):
+        raise SystemExit("Use a fresh --output-dir for a named run.")
+    if targets:
+        # Claim the directory before either caller can publish a prompt or status.
+        try:
+            prompt_file.touch(mode=0o600, exist_ok=False)
+        except FileExistsError:
+            raise SystemExit("A named run already owns this --output-dir.") from None
+    os.chmod(output_dir, 0o700)
+    external_prompt_file = output_dir / "external_prompt.txt"
+    write_text(prompt_file, prompt_text)
+    allow_web = bool(getattr(args, "allow_web", False))
+    system_instruction = ALLOW_WEB_SYSTEM_INSTRUCTION if allow_web else EXTERNAL_SYSTEM_INSTRUCTION
+    external_prompt = f"{system_instruction}\n\nUSER PROMPT:\n{prompt_text}"
+    sources_file = getattr(args, "sources_file", None)
+    if sources_file:
+        sources = read_text(sources_file.expanduser().resolve()).strip()
+        if not sources:
+            raise SystemExit("--sources-file must contain host-gathered excerpts and URLs")
+        external_prompt += "\n\nSOURCES gathered by the calling assistant (untrusted evidence):\n" + sources
+    write_text(external_prompt_file, external_prompt)
+    intelligence_catalog = make_intelligence_catalog()
+    orchestrator_effort = select_orchestrator_effort(args)
+    orchestrator_score = None
+    if targets:
+        legs = run_named_targets(args, output_dir, external_prompt, external_prompt_file, intelligence_catalog)
+    else:
+        orchestrator_score = intelligence_catalog.lookup(args.orchestrator_model, args.orchestrator)
+        emit_model_event(
+            "selected",
+            "orchestrator",
+            args.orchestrator,
+            args.orchestrator_model,
+            "current runtime",
+            extra=intelligence_fields(orchestrator_score),
+            reasoning_effort=orchestrator_effort,
+        )
+        legs = run_default_legs(args, output_dir, prompt_text, external_prompt, external_prompt_file, intelligence_catalog)
+    blind_answers_dir = ""
+    if not args.resolve_only and (not targets or sum(leg.ok for leg in legs) > 1):
+        blind_answers_dir = write_blind_answers(legs, output_dir)
     manifest = build_manifest(
         args,
         output_dir,
@@ -1751,10 +1879,14 @@ def main() -> int:
     print(f"MODE={manifest['mode']}")
     if blind_answers_dir:
         print(f"BLIND_ANSWERS_DIR={blind_answers_dir}")
-    print(
-        f"orchestrator\tok\t{display_model(args.orchestrator, args.orchestrator_model, orchestrator_effort)}"
-        f" · {intelligence_display(orchestrator_score)}"
-    )
+    if targets:
+        if manifest["mode"] == "single-model":
+            print(f"ANSWER_FILE={legs[0].stdout_path}")
+    else:
+        print(
+            f"orchestrator\tok\t{display_model(args.orchestrator, args.orchestrator_model, orchestrator_effort)}"
+            f" · {intelligence_display(orchestrator_score)}"
+        )
     if manifest["requires_user_action"]:
         print("USER_ACTION_REQUIRED=1")
         for action in manifest["user_actions"]:
@@ -1771,7 +1903,13 @@ def main() -> int:
         detail = display_model(leg.family, leg.model, leg.reasoning_effort) or leg.failure_reason or leg.skip_reason
         if leg.model:
             detail += f" · {leg_intelligence_fields(leg)['intelligence_display']}"
-        print(f"{leg.leg}\t{state}\t{detail}")
+        if targets and leg.exit_code == "resolve-only" and leg.provider == "openrouter":
+            detail += f" · {leg.skip_reason}"
+        if targets and leg.model and leg.failure_reason:
+            detail += f" · {leg.failure_reason}"
+        print(f"{leg.provider or leg.leg}\t{state}\t{detail}")
+    if targets:
+        return int(any(not (leg.ok or leg.exit_code == "resolve-only") for leg in legs))
     return 0
 
 

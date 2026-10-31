@@ -2,6 +2,11 @@
 
 Notable changes to `llm-ensemble`.
 
+## 2026-10-31
+
+1. The default Gemini leg now selects an advertised Argon model through agy. Claude remains a separate agy leg.
+2. Added repeatable `--target` for named lookups and comparisons, live catalog resolution, explicit paid routing, and per-target results. `--sources-file` supplies evidence gathered by the caller.
+
 ## 2026-08-25
 
 ### Added

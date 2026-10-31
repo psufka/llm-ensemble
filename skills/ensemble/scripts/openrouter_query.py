@@ -81,6 +81,7 @@ def query_openrouter(
     temperature: float = 0.2,
     max_tokens: int = 16_384,
     timeout: float = 180,
+    free_only: bool = False,
 ) -> tuple[str, str]:
     """Return (content, finish_reason); finish_reason == "length" means truncated."""
     api_key = api_key or os.environ.get("OPENROUTER_API_KEY")
@@ -99,6 +100,8 @@ def query_openrouter(
         "temperature": temperature,
         "max_tokens": max_tokens,
     }
+    if free_only:
+        body["provider"] = {"max_price": {"prompt": 0, "completion": 0, "request": 0}}
     req = urllib.request.Request(
         OPENROUTER_CHAT_URL,
         data=json.dumps(body).encode("utf-8"),
