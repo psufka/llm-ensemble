@@ -96,52 +96,56 @@ class ClaudeModelSelectionTests(unittest.TestCase):
 
 
 class GeminiModelSelectionTests(unittest.TestCase):
-    def test_live_index_can_rank_flash_above_pro(self) -> None:
+    def test_argon_selected_even_when_other_models_have_higher_scores(self) -> None:
         lines = [
-            "gemini-3.7-flash-high\tGemini 3.7 Flash (High)",
+            "gemini-4-argon-high\tGemini 4 Argon (High)",
+            "gemini-3.8-flash-high\tGemini 3.8 Flash (High)",
             "gemini-3.1-pro-high\tGemini 3.1 Pro (High)",
         ]
-        catalog = static_catalog({"3.7-flash": 56.0, "3.1-pro": 47.7})
-        self.assertEqual(run_ensemble.choose_gemini_model(lines, catalog), "gemini-3.7-flash-high")
+        catalog = static_catalog({"3.8-flash": 90.0, "3.1-pro": 80.0})
+        self.assertEqual(run_ensemble.choose_gemini_model(lines, catalog), "gemini-4-argon-high")
 
-    def test_ultra_outranks_pro_regardless_of_version(self) -> None:
-        lines = ["Gemini 3.1 Pro (High)", "Gemini 3 Ultra (Medium)"]
-        self.assertEqual(run_ensemble.choose_gemini_model(lines), "Gemini 3 Ultra (Medium)")
+    def test_missing_argon_does_not_fall_back_to_other_models(self) -> None:
+        lines = ["gemini-3.8-flash-high\tGemini 3.8 Flash (High)", "claude-opus-5-5-high"]
+        model, error = run_ensemble.select_gemini_model(lines)
+        self.assertEqual(model, "")
+        self.assertIn("no Gemini Argon model", error)
 
-    def test_high_tier_preferred_within_same_model(self) -> None:
-        lines = ["Gemini 3.1 Pro (Low)", "Gemini 3.1 Pro (High)"]
-        self.assertEqual(run_ensemble.choose_gemini_model(lines), "Gemini 3.1 Pro (High)")
+    def test_high_tier_preferred_within_argon(self) -> None:
+        lines = ["gemini-4-argon-medium", "gemini-4-argon-high", "gemini-4-argon-low"]
+        self.assertEqual(run_ensemble.choose_gemini_model(lines), "gemini-4-argon-high")
 
     def test_tier_parsed_from_any_parenthesized_group(self) -> None:
-        lines = ["Gemini 3.1 Pro (Preview) (High)", "Gemini 3.1 Pro (Low)"]
-        self.assertEqual(run_ensemble.choose_gemini_model(lines), "Gemini 3.1 Pro (Preview) (High)")
+        lines = ["Gemini 4 Argon (Preview) (High)", "Gemini 4 Argon (Low)"]
+        self.assertEqual(run_ensemble.choose_gemini_model(lines), "Gemini 4 Argon (Preview) (High)")
 
     def test_slug_format_agy_listing(self) -> None:
         # Real agy output observed 2026-08-04; the old parser saw no tier and
         # alphabetical fallback picked "low" over "high".
         lines = [
-            "gemini-3.6-flash-high",
-            "gemini-3.6-flash-medium",
-            "gemini-3.1-pro-high",
-            "gemini-3.1-pro-low",
+            "gemini-4-argon-high",
+            "gemini-4-argon-medium",
+            "gemini-3.8-flash-high",
         ]
-        self.assertEqual(run_ensemble.choose_gemini_model(lines), "gemini-3.1-pro-high")
-        self.assertEqual(run_ensemble.parse_gemini_version("gemini-3.1-pro-high"), (3, 1))
-        self.assertEqual(run_ensemble.parse_model_tier("gemini-3.1-pro-high"), 3)
-        self.assertEqual(run_ensemble.parse_model_tier("Gemini 3.1 Pro (High)"), 3)
+        self.assertEqual(run_ensemble.choose_gemini_model(lines), "gemini-4-argon-high")
+        self.assertEqual(run_ensemble.parse_gemini_version("gemini-4-argon-high"), (4,))
+        self.assertEqual(run_ensemble.parse_model_tier("gemini-4-argon-high"), 3)
+        self.assertEqual(run_ensemble.parse_model_tier("Gemini 4 Argon (High)"), 3)
 
     def test_tab_separated_id_and_display_columns(self) -> None:
         # Real agy output observed 2026-08-08: "model-id<TAB>Display Name".
         # Passing the whole line as --model made agy exit 1 and killed the leg.
         lines = [
             "Fetching available models...",
-            "gemini-3.6-flash-high\tGemini 3.6 Flash (High)",
-            "gemini-3.1-pro-high\tGemini 3.1 Pro (High)",
-            "gemini-3.1-pro-low\tGemini 3.1 Pro (Low)",
+            "gemini-4-argon-high\tGemini 4 Argon (High)",
+            "gemini-4-argon-medium\tGemini 4 Argon (Medium)",
+            "gemini-3.8-flash-high\tGemini 3.8 Flash (High)",
         ]
-        self.assertEqual(run_ensemble.choose_gemini_model(lines), "gemini-3.1-pro-high")
-        self.assertEqual(run_ensemble.agy_model_id("gemini-3.1-pro-high\tGemini 3.1 Pro (High)"), "gemini-3.1-pro-high")
-        self.assertEqual(run_ensemble.agy_model_id("Gemini 3.1 Pro (High)"), "Gemini 3.1 Pro (High)")
+        self.assertEqual(run_ensemble.choose_gemini_model(lines), "gemini-4-argon-high")
+        self.assertEqual(run_ensemble.agy_model_id("gemini-4-argon-high\tGemini 4 Argon (High)"), "gemini-4-argon-high")
+
+    def test_argon_name_requires_a_complete_token(self) -> None:
+        self.assertEqual(run_ensemble.choose_gemini_model(["gemini-4-argonish-high", "gemini-4-jargon-high"]), "")
 
 
 class GrokModelSelectionTests(unittest.TestCase):

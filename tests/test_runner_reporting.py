@@ -27,8 +27,44 @@ class EmptyIntelligenceCatalog:
 
 
 class RunnerReportingTests(unittest.TestCase):
-    def test_main_lists_agy_models_once_for_claude_and_gemini(self) -> None:
-        model_lines = ["Claude Opus 4.6 (Thinking)", "Gemini 3.1 Pro (High)"]
+    def test_list_agy_models_uses_bounded_wrapper_with_closed_stdin(self) -> None:
+        catalog = "gemini-3.7-flash-high\nclaude-opus-4-6-thinking\n"
+
+        def fake_run(command: list[str], **kwargs: object) -> SimpleNamespace:
+            self.assertEqual(command, ["agy-models-15s"])
+            self.assertIs(kwargs["stdin"], run_ensemble.subprocess.DEVNULL)
+            kwargs["stdout"].write(catalog)  # type: ignore[union-attr]
+            return SimpleNamespace(returncode=0)
+
+        with tempfile.TemporaryDirectory() as temp_dir, mock.patch.object(
+            run_ensemble,
+            "command_exists",
+            side_effect=lambda command: command == "agy-models-15s",
+        ), mock.patch.object(run_ensemble.subprocess, "run", side_effect=fake_run):
+            lines, error, requires_action = run_ensemble.list_agy_models(Path(temp_dir))
+
+        self.assertEqual(lines, catalog.splitlines())
+        self.assertEqual(error, "")
+        self.assertFalse(requires_action)
+
+    def test_list_agy_models_rejects_empty_success(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir, mock.patch.object(
+            run_ensemble,
+            "command_exists",
+            return_value=False,
+        ), mock.patch.object(
+            run_ensemble.subprocess,
+            "run",
+            return_value=SimpleNamespace(returncode=0),
+        ):
+            lines, error, requires_action = run_ensemble.list_agy_models(Path(temp_dir))
+
+        self.assertEqual(lines, [])
+        self.assertEqual(error, "agy models returned no Gemini or Claude catalog entries")
+        self.assertFalse(requires_action)
+
+    def test_main_shares_catalog_between_claude_and_argon(self) -> None:
+        model_lines = ["claude-opus-5-5-high", "gemini-3.8-flash-high", "gemini-4-argon-high"]
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
             prompt_path = temp_path / "prompt.txt"
@@ -64,11 +100,11 @@ class RunnerReportingTests(unittest.TestCase):
                 run_ensemble,
                 "run_claude",
                 return_value=run_ensemble.LegResult(leg="claude", family="claude", ok=True),
-            ), mock.patch.object(
+            ) as claude_leg, mock.patch.object(
                 run_ensemble,
                 "run_gemini",
-                return_value=run_ensemble.LegResult(leg="gemini", family="gemini", ok=True),
-            ), mock.patch.object(
+                return_value=run_ensemble.LegResult(leg="gemini", family="gemini", model="gemini-4-argon-high", ok=True),
+            ) as argon_leg, mock.patch.object(
                 run_ensemble,
                 "run_openrouter",
                 return_value=run_ensemble.skip_result("openrouter", "openrouter", "test skip"),
@@ -76,6 +112,44 @@ class RunnerReportingTests(unittest.TestCase):
                 self.assertEqual(run_ensemble.main(), 0)
 
         list_models.assert_called_once()
+        claude_leg.assert_called_once()
+        self.assertEqual(claude_leg.call_args.args[2], "claude-opus-5-5-high")
+        argon_leg.assert_called_once()
+        self.assertEqual(argon_leg.call_args.args[2], "gemini-4-argon-high")
+
+    def test_argon_unavailable_requires_action_without_prompting_an_alternate(self) -> None:
+        args = argparse.Namespace(timeout=10, agy_max_prompt_bytes=100_000, resolve_only=False)
+        with tempfile.TemporaryDirectory() as temp_dir, mock.patch.object(
+            run_ensemble, "run_gemini"
+        ) as model_call, mock.patch("builtins.print"):
+            result = run_ensemble.resolve_and_run_gemini(
+                args,
+                Path(temp_dir),
+                "test prompt",
+                lambda: (["gemini-3.8-flash-high", "claude-opus-5-5-high"], "", False),
+                EmptyIntelligenceCatalog(),
+            )
+
+        model_call.assert_not_called()
+        self.assertFalse(result.ok)
+        self.assertTrue(result.requires_user_action)
+        self.assertIn("Argon", result.user_action)
+        self.assertEqual(result.models_prompted, [])
+
+    def test_argon_command_pins_the_selected_id_and_keeps_prompt_private_in_status(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir, mock.patch.object(
+            run_ensemble,
+            "run_process_leg",
+            return_value=run_ensemble.LegResult(leg="gemini", family="gemini", ok=True),
+        ) as process:
+            run_ensemble.run_gemini(Path(temp_dir), "private test prompt", "gemini-4-argon-high", 90, 100_000)
+
+        command = process.call_args.kwargs["args"]
+        self.assertEqual(command[command.index("--model") + 1], "gemini-4-argon-high")
+        self.assertIn("--sandbox", command)
+        self.assertIn("--disable-slash-commands", command)
+        self.assertNotIn("private test prompt", process.call_args.kwargs["command_for_status"])
+        self.assertEqual(process.call_args.kwargs["cwd"], Path(temp_dir))
 
     def test_openrouter_display_avoids_redundant_provider_suffix(self) -> None:
         self.assertEqual(
