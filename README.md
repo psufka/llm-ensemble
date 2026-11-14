@@ -282,6 +282,27 @@ These CLIs are coding *agents* — normally they read, write, and run commands. 
   clamp from the model's metadata (important for reasoning models with small completion caps). Additive by
   default; `--openrouter-swap` replaces the free wildcard with it.
 
+## Sensitive-data check
+
+Before anything is sent, the runner scans the prompt (and any `--sources-file`) for values that could be used to move
+money or sign in: payment card numbers (Luhn-checked), US Social Security numbers, bank routing numbers (ABA checksum
+plus a keyword), account numbers (next to a keyword such as "account number" or "acct"), IBANs (mod-97), and
+credentials (`password:` and PIN assignments, well-known API-key prefixes, bearer tokens, PEM private keys). Names,
+addresses, health details and dollar amounts are deliberately not checked, and phone numbers, dates and ordinary IDs
+are not flagged. It is a pattern check, not a guarantee: it misses values it cannot recognize, such as a card number
+with unusual separators.
+
+`--sensitive` (or `ENSEMBLE_SENSITIVE`) picks the behavior:
+
+- `redact` (default) replaces each match with `[REDACTED:<kind>]` in the prompt every leg receives and in the saved
+  `prompt.txt` and `external_prompt.txt`, then continues.
+- `allow` sends the text unchanged but still warns.
+- `block` exits with code 3 before anything is written or sent.
+
+With any finding the runner prints one `WARNING` line to stderr and a `SENSITIVE_EVENT=` line to stdout, and records
+the kind, count and masked previews (such as `****1111`) under `sensitive` in `status.json`. A raw matched value is
+never printed or recorded. A debate round is a new runner call, so it is scanned again. `--resolve-only` skips the check.
+
 ## When to use it
 
 Not everything needs four models. Ensemble for:

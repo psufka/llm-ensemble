@@ -2,6 +2,12 @@
 
 Notable changes to `llm-ensemble`.
 
+## 2026-11-13
+
+### Added
+
+- Added a sensitive-data check (`scripts/sensitive_scan.py`). Before any model is called, the runner scans the prompt and `--sources-file` for payment card, Social Security, routing, account and IBAN numbers, passwords, API keys, and private keys. `--sensitive redact` (default, or `ENSEMBLE_SENSITIVE`) replaces them with `[REDACTED:<kind>]` everywhere the text is sent or saved, `allow` sends unchanged with a warning, and `block` exits with code 3 before anything is sent. Findings appear as a stderr warning, a `SENSITIVE_EVENT=` line, and a `sensitive` entry in `status.json`, using counts and masked previews only. `--resolve-only` is unchanged.
+
 ## 2026-10-31
 
 1. The default Gemini leg now selects an advertised Argon model through agy. Claude remains a separate agy leg.

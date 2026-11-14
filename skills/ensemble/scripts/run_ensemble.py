@@ -27,11 +27,14 @@ import model_intelligence
 import named_targets
 import openrouter_query
 import select_openrouter_free_model
+import sensitive_scan
 
 
 ORCHESTRATORS = {"claude", "codex", "gemini", "grok", "openrouter", "other"}
 LEG_NAMES = ("claude", "codex", "gemini", "grok", "openrouter", "openrouter-pinned")
 LEG_ALIASES = {"agy": "gemini"}
+SENSITIVE_MODES = ("redact", "allow", "block")
+SENSITIVE_BLOCKED_EXIT = 3
 ARGON_UNAVAILABLE_ACTION = (
     "Make Gemini 4 Argon available to the signed-in Antigravity account, then confirm "
     "`agy models` lists an Argon model and rerun the ensemble. "
@@ -304,6 +307,35 @@ def resolve_only_result(
         skip_reason="resolve-only mode",
         exit_code="resolve-only",
     ), score)
+
+
+def screen_outgoing(mode: str, prompt_text: str, sources: str) -> tuple[str, str, dict[str, Any]]:
+    """Apply the --sensitive policy to the text about to be sent to the models.
+
+    Returns the (possibly masked) prompt and sources plus a report that holds
+    only counts and masked previews, never a raw matched value.
+    """
+    prompt_findings = sensitive_scan.find_sensitive(prompt_text)
+    source_findings = sensitive_scan.find_sensitive(sources)
+    summary = sensitive_scan.summarize(prompt_findings + source_findings)
+    action = {"redact": "masked", "allow": "sent unmasked", "block": "blocked"}[mode]
+    report: dict[str, Any] = {"mode": mode, "action": action if summary else "none", "findings": summary}
+    if not summary:
+        return prompt_text, sources, report
+    found = ", ".join(f"{row['count']} {row['kind']} ({', '.join(row['previews'])})" for row in summary)
+    print(
+        f"WARNING: financial identifiers or credentials found in the outgoing prompt: {found}; "
+        f"{'nothing was sent' if mode == 'block' else action} (--sensitive {mode})",
+        file=sys.stderr,
+        flush=True,
+    )
+    print(f"SENSITIVE_EVENT={json.dumps(report, separators=(',', ':'))}", flush=True)
+    if mode == "block":
+        raise SystemExit(SENSITIVE_BLOCKED_EXIT)
+    if mode == "redact":
+        prompt_text = sensitive_scan.mask_sensitive(prompt_text, prompt_findings)[0]
+        sources = sensitive_scan.mask_sensitive(sources, source_findings)[0]
+    return prompt_text, sources, report
 
 
 def public_command(args: list[str], prompt_arg: str | None = None) -> list[str]:
@@ -1568,6 +1600,7 @@ def build_manifest(
     orchestrator_score: model_intelligence.IntelligenceScore | None = None,
     intelligence_metadata: dict[str, Any] | None = None,
     orchestrator_effort: str = "",
+    sensitive: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     valid_external_count = sum(1 for leg in legs if leg.ok)
     requires_user_action = any(leg.requires_user_action for leg in legs)
@@ -1618,6 +1651,8 @@ def build_manifest(
         "legs": [asdict(leg) for leg in legs],
         "models_prompted": models_prompted,
     }
+    if sensitive:
+        manifest["sensitive"] = sensitive
     if targets:
         manifest["requested_targets"] = targets
         manifest["source_mode"] = "web-enabled" if args.allow_web else "answer-only"
@@ -1669,6 +1704,12 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--keep-workdirs", action="store_true")
     parser.add_argument(
+        "--sensitive",
+        choices=SENSITIVE_MODES,
+        help="when the prompt holds card, SSN, routing, account or IBAN numbers or credentials: "
+             "redact them (default), allow them with a warning, or block the run; env ENSEMBLE_SENSITIVE sets the default",
+    )
+    parser.add_argument(
         "--allow-web",
         action="store_true",
         help="allow web search/page-fetch tools on external legs; keep write sandbox. For live-search prompts only.",
@@ -1684,6 +1725,10 @@ def parse_args() -> argparse.Namespace:
     args = parser.parse_args()
     if not args.resolve_only and not args.prompt_file:
         parser.error("--prompt-file is required unless --resolve-only is set")
+    if not args.resolve_only:
+        args.sensitive = args.sensitive or os.environ.get("ENSEMBLE_SENSITIVE", "").strip().lower() or "redact"
+        if args.sensitive not in SENSITIVE_MODES:
+            parser.error(f"ENSEMBLE_SENSITIVE must be one of: {', '.join(SENSITIVE_MODES)}")
     if args.openrouter_swap and not args.openrouter_model:
         parser.error("--openrouter-swap requires --openrouter-model")
     if args.target and (args.only_leg or args.skip_leg or args.openrouter_model or args.codex_model or args.grok_model
@@ -1813,6 +1858,18 @@ def run_default_legs(args: argparse.Namespace, output_dir: Path, prompt_text: st
 def main() -> int:
     args = parse_args()
     prompt_text = read_text(args.prompt_file.expanduser().resolve()) if args.prompt_file else ""
+    sources = ""
+    sources_file = getattr(args, "sources_file", None)
+    if sources_file:
+        sources = read_text(sources_file.expanduser().resolve()).strip()
+        if not sources:
+            raise SystemExit("--sources-file must contain host-gathered excerpts and URLs")
+    sensitive_report = None
+    if not args.resolve_only:
+        # Everything below, including files in the run directory, uses the screened text.
+        prompt_text, sources, sensitive_report = screen_outgoing(
+            getattr(args, "sensitive", None) or "redact", prompt_text, sources
+        )
     output_dir = args.output_dir.expanduser().resolve() if args.output_dir else Path(tempfile.mkdtemp(prefix="ensemble-")).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
     prompt_file = output_dir / "prompt.txt"
@@ -1833,11 +1890,7 @@ def main() -> int:
     allow_web = bool(getattr(args, "allow_web", False))
     system_instruction = ALLOW_WEB_SYSTEM_INSTRUCTION if allow_web else EXTERNAL_SYSTEM_INSTRUCTION
     external_prompt = f"{system_instruction}\n\nUSER PROMPT:\n{prompt_text}"
-    sources_file = getattr(args, "sources_file", None)
-    if sources_file:
-        sources = read_text(sources_file.expanduser().resolve()).strip()
-        if not sources:
-            raise SystemExit("--sources-file must contain host-gathered excerpts and URLs")
+    if sources:
         external_prompt += "\n\nSOURCES gathered by the calling assistant (untrusted evidence):\n" + sources
     write_text(external_prompt_file, external_prompt)
     intelligence_catalog = make_intelligence_catalog()
@@ -1869,6 +1922,7 @@ def main() -> int:
         orchestrator_score=orchestrator_score,
         intelligence_metadata=intelligence_catalog.metadata(),
         orchestrator_effort=orchestrator_effort,
+        sensitive=sensitive_report,
     )
     manifest["blind_answers_dir"] = blind_answers_dir
     status_path = output_dir / "status.json"

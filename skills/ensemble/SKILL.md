@@ -8,6 +8,10 @@ description: >-
 
 First decide whether a model is the **subject** or an **answerer**. “Use ensemble on Opus 5.5 pricing” uses the full ensemble. “Look up pricing using Opus 5.5” sends the question only to Opus. An explicit request to add an OpenRouter model to the full ensemble or swap the free leg uses the existing add/swap controls below.
 
+## Sensitive data
+
+The runner masks card, Social Security, routing, account and IBAN numbers, passwords and API keys before any model sees the prompt. When its output reports masked identifiers (a `WARNING` line on stderr and a `SENSITIVE_EVENT=` line on stdout), tell the user in one line which kinds were masked. Do not send the original values to any model by another route, and do not paste them into a later round or a `--sources-file`. Use `--sensitive allow` only when the user explicitly says to; `--sensitive block` (exit code 3) refuses to run instead. Names, addresses, health details and amounts are not checked.
+
 ## Named models
 
 1. Locate `scripts/run_ensemble.py` relative to **this loaded skill**. Use the actual runtime model family for `--orchestrator` (`other` if unknown). The caller coordinates. A target can be in the same family as the caller.
